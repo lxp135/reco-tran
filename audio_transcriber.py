@@ -35,7 +35,7 @@ class AudioTranscriber:
     def __init__(self, root):
         self.root = root
         self.root.title("录音转写工具")
-        self.root.geometry("800x600")
+        self.root.geometry("1400x700")
         self.root.resizable(True, True)
         
         # ffmpeg会自动从系统PATH中查找，无需手动设置路径
@@ -97,7 +97,9 @@ class AudioTranscriber:
         # 配置网格权重
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=2)  # 转写结果列
+        main_frame.columnconfigure(1, weight=1)  # 日志列
+        main_frame.columnconfigure(2, weight=1)  # 音频源列
         main_frame.rowconfigure(3, weight=1)
         
         # 标题
@@ -134,22 +136,9 @@ class AudioTranscriber:
         self.duration_label = ttk.Label(control_frame, text="时长: 00:00")
         self.duration_label.grid(row=0, column=5)
         
-        # 音频源监控区域
-        audio_source_frame = ttk.LabelFrame(main_frame, text="音频源监控 (自动启动)", padding="10")
-        audio_source_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
-        audio_source_frame.columnconfigure(0, weight=1)
-        
-
-        
-        # 音频设备列表框架 - 使用固定布局，不使用滚动条
-        self.devices_frame = ttk.Frame(audio_source_frame)
-        self.devices_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
-        self.devices_frame.columnconfigure(0, weight=1)
-        self.devices_frame.columnconfigure(1, weight=1)
-        
         # 文件操作区域
         file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="10")
-        file_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 打开音频文件按钮
         ttk.Button(file_frame, text="打开音频文件", command=self.open_audio_file).grid(row=0, column=0, padx=(0, 10))
@@ -165,16 +154,10 @@ class AudioTranscriber:
         # 清空文本按钮
         ttk.Button(file_frame, text="清空文本", command=self.clear_text).grid(row=0, column=3)
         
-        # 主内容区域（转写结果和日志）
-        content_frame = ttk.Frame(main_frame)
-        content_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        content_frame.columnconfigure(0, weight=2)  # 转写结果占更多空间
-        content_frame.columnconfigure(1, weight=1)  # 日志窗口
-        content_frame.rowconfigure(0, weight=1)
-        
-        # 转写结果区域
-        result_frame = ttk.LabelFrame(content_frame, text="转写结果", padding="10")
-        result_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
+        # 三列主内容区域
+        # 转写结果区域（左列）
+        result_frame = ttk.LabelFrame(main_frame, text="转写结果", padding="10")
+        result_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
         result_frame.columnconfigure(0, weight=1)
         result_frame.rowconfigure(1, weight=1)
         
@@ -183,12 +166,12 @@ class AudioTranscriber:
         self.realtime_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
         
         # 文本显示区域
-        self.text_area = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, height=15)
+        self.text_area = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, height=20)
         self.text_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
-        # 日志区域
-        log_frame = ttk.LabelFrame(content_frame, text="执行日志", padding="10")
-        log_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 0))
+        # 日志区域（中列）
+        log_frame = ttk.LabelFrame(main_frame, text="执行日志", padding="10")
+        log_frame.grid(row=3, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 5))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
         
@@ -202,17 +185,42 @@ class AudioTranscriber:
         ttk.Checkbutton(log_control_frame, text="自动滚动", variable=self.auto_scroll_var).grid(row=0, column=1)
         
         # 日志显示区域
-        self.log_area = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15, font=("Consolas", 9))
+        self.log_area = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=20, font=("Consolas", 9))
         self.log_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_area.config(state=tk.DISABLED)  # 设置为只读
         
+        # 音频源监控区域（右列）
+        audio_source_frame = ttk.LabelFrame(main_frame, text="音频源监控 (自动启动)", padding="10")
+        audio_source_frame.grid(row=3, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 0))
+        audio_source_frame.columnconfigure(0, weight=1)
+        audio_source_frame.rowconfigure(0, weight=1)
+        
+        # 音频设备列表框架 - 使用滚动条以适应较窄的列
+        devices_canvas = tk.Canvas(audio_source_frame)
+        devices_scrollbar = ttk.Scrollbar(audio_source_frame, orient="vertical", command=devices_canvas.yview)
+        self.devices_frame = ttk.Frame(devices_canvas)
+        
+        self.devices_frame.bind(
+            "<Configure>",
+            lambda e: devices_canvas.configure(scrollregion=devices_canvas.bbox("all"))
+        )
+        
+        devices_canvas.create_window((0, 0), window=self.devices_frame, anchor="nw")
+        devices_canvas.configure(yscrollcommand=devices_scrollbar.set)
+        
+        devices_canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        devices_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # 配置设备框架列权重
+        self.devices_frame.columnconfigure(0, weight=1)
+        
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
-        self.progress.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.progress.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10))
         
         # 状态栏
         self.status_bar = ttk.Label(main_frame, text="就绪", relief=tk.SUNKEN)
-        self.status_bar.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E))
+        self.status_bar.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E))
     
     def setup_logging(self):
         """设置日志系统"""
