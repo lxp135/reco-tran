@@ -17,6 +17,7 @@ import whisper
 import logging
 from logging.handlers import QueueHandler
 import torch
+import numpy as np
 
 class QueueLogHandler(QueueHandler):
     """自定义队列日志处理器"""
@@ -50,6 +51,14 @@ class AudioTranscriber:
         self.stream = None
         self.start_time = None
         
+        # 音频设备相关
+        self.audio_devices = []
+        self.selected_device_index = None
+        self.device_status = {}  # 存储每个设备的状态
+        self.device_enabled = {}  # 存储每个设备的启用状态
+        self.device_monitors = {}  # 存储设备监控线程
+        self.monitoring_active = False
+        
         # 语音识别器
         self.recognizer = sr.Recognizer()
         
@@ -73,6 +82,9 @@ class AudioTranscriber:
         self.last_transcription_time = 0
         
         self.setup_ui()
+        
+        # 初始化音频设备
+        self.initialize_audio_devices()
         
         # 启动日志更新线程
         self.start_log_updater()
@@ -122,9 +134,45 @@ class AudioTranscriber:
         self.duration_label = ttk.Label(control_frame, text="时长: 00:00")
         self.duration_label.grid(row=0, column=5)
         
+        # 音频源选择区域
+        audio_source_frame = ttk.LabelFrame(main_frame, text="音频源选择", padding="10")
+        audio_source_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        audio_source_frame.columnconfigure(0, weight=1)
+        
+        # 音频源控制按钮
+        source_control_frame = ttk.Frame(audio_source_frame)
+        source_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        ttk.Button(source_control_frame, text="刷新设备", command=self.refresh_audio_devices).grid(row=0, column=0, padx=(0, 10))
+        self.monitoring_button = ttk.Button(source_control_frame, text="开始监控", command=self.toggle_device_monitoring)
+        self.monitoring_button.grid(row=0, column=1, padx=(0, 10))
+        
+        # 音频设备列表框架
+        devices_frame = ttk.Frame(audio_source_frame)
+        devices_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        devices_frame.columnconfigure(0, weight=1)
+        
+        # 创建滚动区域用于显示音频设备
+        self.devices_canvas = tk.Canvas(devices_frame, height=120)
+        self.devices_scrollbar = ttk.Scrollbar(devices_frame, orient="vertical", command=self.devices_canvas.yview)
+        self.devices_scrollable_frame = ttk.Frame(self.devices_canvas)
+        
+        self.devices_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.devices_canvas.configure(scrollregion=self.devices_canvas.bbox("all"))
+        )
+        
+        self.devices_canvas.create_window((0, 0), window=self.devices_scrollable_frame, anchor="nw")
+        self.devices_canvas.configure(yscrollcommand=self.devices_scrollbar.set)
+        
+        self.devices_canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.devices_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        devices_frame.rowconfigure(0, weight=1)
+        
         # 文件操作区域
         file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="10")
-        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        file_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 打开音频文件按钮
         ttk.Button(file_frame, text="打开音频文件", command=self.open_audio_file).grid(row=0, column=0, padx=(0, 10))
@@ -142,7 +190,7 @@ class AudioTranscriber:
         
         # 主内容区域（转写结果和日志）
         content_frame = ttk.Frame(main_frame)
-        content_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        content_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         content_frame.columnconfigure(0, weight=2)  # 转写结果占更多空间
         content_frame.columnconfigure(1, weight=1)  # 日志窗口
         content_frame.rowconfigure(0, weight=1)
@@ -183,11 +231,11 @@ class AudioTranscriber:
         
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
-        self.progress.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.progress.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 状态栏
         self.status_bar = ttk.Label(main_frame, text="就绪", relief=tk.SUNKEN)
-        self.status_bar.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E))
+        self.status_bar.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E))
     
     def setup_logging(self):
         """设置日志系统"""
@@ -210,23 +258,231 @@ class AudioTranscriber:
     
     def start_log_updater(self):
         """启动日志更新线程"""
-        def update_log():
+        def update_logs():
             while True:
                 try:
-                    # 从队列中获取日志消息
-                    log_record = self.log_queue.get(timeout=0.1)
-                    if log_record is None:
+                    # 从队列中获取日志记录
+                    record = self.log_queue.get(timeout=1)
+                    if record is None:
                         break
                     
                     # 在主线程中更新UI
-                    self.root.after(0, self.append_log, log_record)
+                    self.root.after(0, self.append_log, record)
                 except queue.Empty:
                     continue
                 except Exception as e:
-                    print(f"日志更新错误: {e}")
+                    print(f"日志更新线程错误: {e}")
         
-        self.log_thread = threading.Thread(target=update_log, daemon=True)
+        self.log_thread = threading.Thread(target=update_logs, daemon=True)
         self.log_thread.start()
+    
+    def initialize_audio_devices(self):
+        """初始化音频设备列表"""
+        try:
+            self.audio_devices = []
+            device_count = self.audio.get_device_count()
+            
+            for i in range(device_count):
+                try:
+                    device_info = self.audio.get_device_info_by_index(i)
+                    # 只添加输入设备
+                    if device_info['maxInputChannels'] > 0:
+                        self.audio_devices.append({
+                            'index': i,
+                            'name': device_info['name'],
+                            'channels': device_info['maxInputChannels'],
+                            'sample_rate': int(device_info['defaultSampleRate']),
+                            'is_default': i == self.audio.get_default_input_device_info()['index']
+                        })
+                        # 初始化设备状态
+                        self.device_status[i] = {'active': False, 'level': 0}
+                        self.device_enabled[i] = True  # 默认启用所有设备
+                except Exception as e:
+                    self.logger.warning(f"获取设备 {i} 信息失败: {e}")
+            
+            self.logger.info(f"发现 {len(self.audio_devices)} 个音频输入设备")
+            self.update_devices_display()
+            
+        except Exception as e:
+            self.logger.error(f"初始化音频设备失败: {e}")
+    
+    def refresh_audio_devices(self):
+        """刷新音频设备列表"""
+        self.logger.info("刷新音频设备列表...")
+        self.initialize_audio_devices()
+    
+    def update_devices_display(self):
+        """更新设备显示界面"""
+        # 清空现有显示
+        for widget in self.devices_scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        if not self.audio_devices:
+            ttk.Label(self.devices_scrollable_frame, text="未发现音频输入设备").grid(row=0, column=0, pady=10)
+            return
+        
+        # 创建设备控件
+        for i, device in enumerate(self.audio_devices):
+            device_frame = ttk.Frame(self.devices_scrollable_frame)
+            device_frame.grid(row=i, column=0, sticky=(tk.W, tk.E), pady=2, padx=5)
+            device_frame.columnconfigure(1, weight=1)
+            
+            # 设备启用开关
+            device_var = tk.BooleanVar(value=self.device_enabled.get(device['index'], True))
+            device_check = ttk.Checkbutton(
+                device_frame, 
+                variable=device_var,
+                command=lambda idx=device['index'], var=device_var: self.toggle_device_enabled(idx, var.get())
+            )
+            device_check.grid(row=0, column=0, padx=(0, 10))
+            
+            # 设备名称和信息
+            device_name = device['name'][:40] + '...' if len(device['name']) > 40 else device['name']
+            default_text = " (默认)" if device['is_default'] else ""
+            device_label = ttk.Label(
+                device_frame, 
+                text=f"{device_name}{default_text}"
+            )
+            device_label.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+            
+            # 状态指示器
+            status_frame = ttk.Frame(device_frame)
+            status_frame.grid(row=0, column=2, padx=(0, 10))
+            
+            # 活动状态指示灯
+            status_canvas = tk.Canvas(status_frame, width=12, height=12)
+            status_canvas.grid(row=0, column=0, padx=(0, 5))
+            
+            # 绘制状态指示灯
+            device_status = self.device_status.get(device['index'], {'active': False, 'level': 0})
+            color = 'green' if device_status['active'] else 'gray'
+            status_canvas.create_oval(2, 2, 10, 10, fill=color, outline='black')
+            
+            # 音量级别显示
+            level_label = ttk.Label(status_frame, text=f"音量: {device_status['level']:.0f}%")
+            level_label.grid(row=0, column=1)
+            
+            # 设备详细信息
+            info_label = ttk.Label(
+                device_frame, 
+                text=f"通道: {device['channels']} | 采样率: {device['sample_rate']}Hz",
+                font=('TkDefaultFont', 8)
+            )
+            info_label.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+            
+            # 存储控件引用以便后续更新
+            setattr(self, f'device_status_canvas_{device["index"]}', status_canvas)
+            setattr(self, f'device_level_label_{device["index"]}', level_label)
+    
+    def toggle_device_enabled(self, device_index, enabled):
+        """切换设备启用状态"""
+        self.device_enabled[device_index] = enabled
+        device_name = next((d['name'] for d in self.audio_devices if d['index'] == device_index), f"设备{device_index}")
+        status = "启用" if enabled else "禁用"
+        self.logger.info(f"{status}音频设备: {device_name}")
+    
+    def toggle_device_monitoring(self):
+        """切换设备监控状态"""
+        if self.monitoring_active:
+            self.stop_device_monitoring()
+        else:
+            self.start_device_monitoring()
+    
+    def start_device_monitoring(self):
+        """开始监控音频设备"""
+        if self.monitoring_active:
+            return
+        
+        self.monitoring_active = True
+        self.monitoring_button.config(text="停止监控")
+        self.logger.info("开始监控音频设备状态...")
+        
+        # 为每个启用的设备创建监控线程
+        for device in self.audio_devices:
+            if self.device_enabled.get(device['index'], True):
+                monitor_thread = threading.Thread(
+                    target=self.monitor_device,
+                    args=(device['index'],),
+                    daemon=True
+                )
+                monitor_thread.start()
+                self.device_monitors[device['index']] = monitor_thread
+    
+    def stop_device_monitoring(self):
+        """停止监控音频设备"""
+        self.monitoring_active = False
+        self.monitoring_button.config(text="开始监控")
+        self.logger.info("停止监控音频设备状态")
+        
+        # 重置所有设备状态
+        for device_index in self.device_status:
+            self.device_status[device_index] = {'active': False, 'level': 0}
+            self.update_device_status_display(device_index)
+    
+    def monitor_device(self, device_index):
+        """监控单个设备的音频输入"""
+        try:
+            # 创建音频流用于监控
+            stream = self.audio.open(
+                format=self.format,
+                channels=1,
+                rate=self.rate,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=self.chunk
+            )
+            
+            while self.monitoring_active and self.device_enabled.get(device_index, True):
+                try:
+                    data = stream.read(self.chunk, exception_on_overflow=False)
+                    
+                    # 计算音频级别
+                    audio_data = np.frombuffer(data, dtype=np.int16)
+                    level = np.sqrt(np.mean(audio_data**2))
+                    level_percent = min(100, (level / 3000) * 100)  # 归一化到0-100%
+                    
+                    # 更新设备状态
+                    is_active = level_percent > 1  # 阈值可调整
+                    self.device_status[device_index] = {
+                        'active': is_active,
+                        'level': level_percent
+                    }
+                    
+                    # 在主线程中更新UI
+                    self.root.after(0, self.update_device_status_display, device_index)
+                    
+                    time.sleep(0.1)  # 100ms更新间隔
+                    
+                except Exception as e:
+                    if self.monitoring_active:
+                        self.logger.warning(f"设备 {device_index} 监控错误: {e}")
+                    break
+            
+            stream.stop_stream()
+            stream.close()
+            
+        except Exception as e:
+            self.logger.error(f"无法监控设备 {device_index}: {e}")
+    
+    def update_device_status_display(self, device_index):
+        """更新设备状态显示"""
+        try:
+            status_canvas = getattr(self, f'device_status_canvas_{device_index}', None)
+            level_label = getattr(self, f'device_level_label_{device_index}', None)
+            
+            if status_canvas and level_label:
+                device_status = self.device_status.get(device_index, {'active': False, 'level': 0})
+                
+                # 更新状态指示灯
+                status_canvas.delete("all")
+                color = 'green' if device_status['active'] else 'gray'
+                status_canvas.create_oval(2, 2, 10, 10, fill=color, outline='black')
+                
+                # 更新音量级别
+                level_label.config(text=f"音量: {device_status['level']:.0f}%")
+                
+        except Exception as e:
+            pass  # 忽略UI更新错误
     
     def append_log(self, log_record):
         """在日志区域添加日志消息"""
@@ -315,15 +571,22 @@ class AudioTranscriber:
             
     def record_audio(self):
         try:
+            # 获取选中的音频设备
+            selected_device = self.get_selected_device()
+            if selected_device is None:
+                self.root.after(0, lambda: messagebox.showwarning("警告", "请先选择一个音频设备"))
+                return
+            
             self.stream = self.audio.open(
                 format=self.format,
                 channels=self.channels,
                 rate=self.rate,
                 input=True,
+                input_device_index=selected_device['index'],
                 frames_per_buffer=self.chunk
             )
             
-            self.log_info(f"音频流配置: {self.rate}Hz, {self.channels}声道, 缓冲区大小: {self.chunk}")
+            self.log_info(f"音频流配置: {self.rate}Hz, {self.channels}声道, 缓冲区大小: {self.chunk}, 设备: {selected_device['name']}")
             
             self.start_time = time.time()
             self.last_transcription_time = self.start_time
@@ -348,6 +611,20 @@ class AudioTranscriber:
                 
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror("错误", f"录音过程中出错: {str(e)}"))
+    
+    def get_selected_device(self):
+        """获取当前选中的音频设备"""
+        # 如果有默认设备且启用，使用默认设备
+        for device in self.audio_devices:
+            if device['is_default'] and self.device_enabled.get(device['index'], True):
+                return device
+        
+        # 否则使用第一个启用的设备
+        for device in self.audio_devices:
+            if self.device_enabled.get(device['index'], True):
+                return device
+        
+        return None
             
     def update_timer(self):
         while self.recording:
