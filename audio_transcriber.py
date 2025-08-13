@@ -134,8 +134,8 @@ class AudioTranscriber:
         self.duration_label = ttk.Label(control_frame, text="时长: 00:00")
         self.duration_label.grid(row=0, column=5)
         
-        # 音频源选择区域
-        audio_source_frame = ttk.LabelFrame(main_frame, text="音频源选择", padding="10")
+        # 音频源监控区域
+        audio_source_frame = ttk.LabelFrame(main_frame, text="音频源监控 (自动启动)", padding="10")
         audio_source_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         audio_source_frame.columnconfigure(0, weight=1)
         
@@ -144,31 +144,14 @@ class AudioTranscriber:
         source_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         ttk.Button(source_control_frame, text="刷新设备", command=self.refresh_audio_devices).grid(row=0, column=0, padx=(0, 10))
-        self.monitoring_button = ttk.Button(source_control_frame, text="开始监控", command=self.toggle_device_monitoring)
+        self.monitoring_button = ttk.Button(source_control_frame, text="停止监控", command=self.toggle_device_monitoring)
         self.monitoring_button.grid(row=0, column=1, padx=(0, 10))
         
-        # 音频设备列表框架
-        devices_frame = ttk.Frame(audio_source_frame)
-        devices_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        devices_frame.columnconfigure(0, weight=1)
-        
-        # 创建滚动区域用于显示音频设备
-        self.devices_canvas = tk.Canvas(devices_frame, height=120)
-        self.devices_scrollbar = ttk.Scrollbar(devices_frame, orient="vertical", command=self.devices_canvas.yview)
-        self.devices_scrollable_frame = ttk.Frame(self.devices_canvas)
-        
-        self.devices_scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.devices_canvas.configure(scrollregion=self.devices_canvas.bbox("all"))
-        )
-        
-        self.devices_canvas.create_window((0, 0), window=self.devices_scrollable_frame, anchor="nw")
-        self.devices_canvas.configure(yscrollcommand=self.devices_scrollbar.set)
-        
-        self.devices_canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.devices_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        
-        devices_frame.rowconfigure(0, weight=1)
+        # 音频设备列表框架 - 使用固定布局，不使用滚动条
+        self.devices_frame = ttk.Frame(audio_source_frame)
+        self.devices_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        self.devices_frame.columnconfigure(0, weight=1)
+        self.devices_frame.columnconfigure(1, weight=1)
         
         # 文件操作区域
         file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="10")
@@ -285,23 +268,30 @@ class AudioTranscriber:
             for i in range(device_count):
                 try:
                     device_info = self.audio.get_device_info_by_index(i)
-                    # 只添加输入设备
+                    # 只添加输入设备，并过滤扬声器和麦克风
                     if device_info['maxInputChannels'] > 0:
-                        self.audio_devices.append({
-                            'index': i,
-                            'name': device_info['name'],
-                            'channels': device_info['maxInputChannels'],
-                            'sample_rate': int(device_info['defaultSampleRate']),
-                            'is_default': i == self.audio.get_default_input_device_info()['index']
-                        })
-                        # 初始化设备状态
-                        self.device_status[i] = {'active': False, 'level': 0}
-                        self.device_enabled[i] = True  # 默认启用所有设备
+                        device_name = device_info['name'].lower()
+                        # 过滤出扬声器和麦克风设备
+                        if any(keyword in device_name for keyword in ['麦克风', 'microphone', 'mic', '扬声器', 'speaker', 'headphone', 'headset']):
+                            self.audio_devices.append({
+                                'index': i,
+                                'name': device_info['name'],
+                                'channels': device_info['maxInputChannels'],
+                                'sample_rate': int(device_info['defaultSampleRate']),
+                                'is_default': i == self.audio.get_default_input_device_info()['index']
+                            })
+                            # 初始化设备状态
+                            self.device_status[i] = {'active': False, 'level': 0}
+                            self.device_enabled[i] = True  # 默认启用所有设备
                 except Exception as e:
                     self.logger.warning(f"获取设备 {i} 信息失败: {e}")
             
             self.logger.info(f"发现 {len(self.audio_devices)} 个音频输入设备")
             self.update_devices_display()
+            
+            # 默认启动监控
+            if self.audio_devices:
+                self.start_device_monitoring()
             
         except Exception as e:
             self.logger.error(f"初始化音频设备失败: {e}")
@@ -314,44 +304,39 @@ class AudioTranscriber:
     def update_devices_display(self):
         """更新设备显示界面"""
         # 清空现有显示
-        for widget in self.devices_scrollable_frame.winfo_children():
+        for widget in self.devices_frame.winfo_children():
             widget.destroy()
         
         if not self.audio_devices:
-            ttk.Label(self.devices_scrollable_frame, text="未发现音频输入设备").grid(row=0, column=0, pady=10)
+            ttk.Label(self.devices_frame, text="未发现扬声器或麦克风设备").grid(row=0, column=0, columnspan=2, pady=10)
             return
         
-        # 创建设备控件
+        # 使用网格布局显示设备，每行最多2个设备
         for i, device in enumerate(self.audio_devices):
-            device_frame = ttk.Frame(self.devices_scrollable_frame)
-            device_frame.grid(row=i, column=0, sticky=(tk.W, tk.E), pady=2, padx=5)
-            device_frame.columnconfigure(1, weight=1)
+            row = i // 2
+            col = i % 2
+            
+            # 设备容器框架
+            device_container = ttk.LabelFrame(self.devices_frame, text="", padding="5")
+            device_container.grid(row=row, column=col, sticky=(tk.W, tk.E), pady=2, padx=5)
+            device_container.columnconfigure(1, weight=1)
+            
+            # 设备启用开关和状态指示灯
+            control_frame = ttk.Frame(device_container)
+            control_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 5))
             
             # 设备启用开关
             device_var = tk.BooleanVar(value=self.device_enabled.get(device['index'], True))
             device_check = ttk.Checkbutton(
-                device_frame, 
+                control_frame, 
                 variable=device_var,
                 command=lambda idx=device['index'], var=device_var: self.toggle_device_enabled(idx, var.get())
             )
-            device_check.grid(row=0, column=0, padx=(0, 10))
-            
-            # 设备名称和信息
-            device_name = device['name'][:40] + '...' if len(device['name']) > 40 else device['name']
-            default_text = " (默认)" if device['is_default'] else ""
-            device_label = ttk.Label(
-                device_frame, 
-                text=f"{device_name}{default_text}"
-            )
-            device_label.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
-            
-            # 状态指示器
-            status_frame = ttk.Frame(device_frame)
-            status_frame.grid(row=0, column=2, padx=(0, 10))
+            device_check.grid(row=0, column=0, padx=(0, 5))
             
             # 活动状态指示灯
-            status_canvas = tk.Canvas(status_frame, width=12, height=12)
-            status_canvas.grid(row=0, column=0, padx=(0, 5))
+            status_canvas = tk.Canvas(control_frame, width=12, height=12)
+            status_canvas.grid(row=0, column=1, padx=(0, 5))
             
             # 绘制状态指示灯
             device_status = self.device_status.get(device['index'], {'active': False, 'level': 0})
@@ -359,16 +344,26 @@ class AudioTranscriber:
             status_canvas.create_oval(2, 2, 10, 10, fill=color, outline='black')
             
             # 音量级别显示
-            level_label = ttk.Label(status_frame, text=f"音量: {device_status['level']:.0f}%")
-            level_label.grid(row=0, column=1)
+            level_label = ttk.Label(control_frame, text=f"音量: {device_status['level']:.0f}%")
+            level_label.grid(row=0, column=2, padx=(5, 0))
+            
+            # 设备名称
+            device_name = device['name'][:30] + '...' if len(device['name']) > 30 else device['name']
+            default_text = " (默认)" if device['is_default'] else ""
+            device_label = ttk.Label(
+                device_container, 
+                text=f"{device_name}{default_text}",
+                font=('TkDefaultFont', 9, 'bold')
+            )
+            device_label.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 2))
             
             # 设备详细信息
             info_label = ttk.Label(
-                device_frame, 
+                device_container, 
                 text=f"通道: {device['channels']} | 采样率: {device['sample_rate']}Hz",
                 font=('TkDefaultFont', 8)
             )
-            info_label.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+            info_label.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E))
             
             # 存储控件引用以便后续更新
             setattr(self, f'device_status_canvas_{device["index"]}', status_canvas)
