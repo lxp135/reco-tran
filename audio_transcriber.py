@@ -78,7 +78,7 @@ class AudioTranscriber:
         self.setup_logging()
         self.transcription_thread = None
         self.audio_buffer = []
-        self.buffer_duration = 3  # 每3秒进行一次转写
+        self.buffer_duration = 10  # 每10秒进行一次转写
         self.last_transcription_time = 0
         
         self.setup_ui()
