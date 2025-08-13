@@ -259,28 +259,64 @@ class AudioTranscriber:
             self.audio_devices = []
             device_count = self.audio.get_device_count()
             
+            self.logger.info(f"开始扫描音频设备，共检测到 {device_count} 个设备")
+            self.logger.info("=== 设备详细信息 ===")
+            
             for i in range(device_count):
                 try:
                     device_info = self.audio.get_device_info_by_index(i)
+                    device_name = device_info['name']
+                    max_input = device_info['maxInputChannels']
+                    max_output = device_info['maxOutputChannels']
+                    sample_rate = int(device_info['defaultSampleRate'])
+                    
+                    # 记录所有设备信息
+                    self.logger.info(f"设备 {i}: {device_name}")
+                    self.logger.info(f"  - 输入通道: {max_input}, 输出通道: {max_output}")
+                    self.logger.info(f"  - 采样率: {sample_rate}Hz")
+                    
                     # 只添加输入设备，并过滤扬声器和麦克风
-                    if device_info['maxInputChannels'] > 0:
-                        device_name = device_info['name'].lower()
-                        # 过滤出扬声器和麦克风设备
-                        if any(keyword in device_name for keyword in ['麦克风', 'microphone', 'mic', '扬声器', 'speaker', 'headphone', 'headset']):
+                    if max_input > 0:
+                        device_name_lower = device_name.lower()
+                        keywords = ['麦克风', 'microphone', 'mic', '扬声器', 'speaker', 'headphone', 'headset']
+                        is_valid = any(keyword in device_name_lower for keyword in keywords)
+                        
+                        self.logger.info(f"  - 输入设备: 是, 关键词匹配: {'是' if is_valid else '否'}")
+                        
+                        if is_valid:
                             self.audio_devices.append({
                                 'index': i,
-                                'name': device_info['name'],
-                                'channels': device_info['maxInputChannels'],
-                                'sample_rate': int(device_info['defaultSampleRate']),
+                                'name': device_name,
+                                'channels': max_input,
+                                'sample_rate': sample_rate,
                                 'is_default': i == self.audio.get_default_input_device_info()['index']
                             })
                             # 初始化设备状态
                             self.device_status[i] = {'active': False, 'level': 0}
                             self.device_enabled[i] = True  # 默认启用所有设备
+                            self.logger.info(f"  - 状态: 已添加到有效设备列表")
+                        else:
+                            self.logger.info(f"  - 状态: 已跳过（不匹配关键词）")
+                    else:
+                        self.logger.info(f"  - 输入设备: 否, 状态: 已跳过（无输入通道）")
+                    
+                    self.logger.info("")
+                    
                 except Exception as e:
                     self.logger.warning(f"获取设备 {i} 信息失败: {e}")
             
-            self.logger.info(f"发现 {len(self.audio_devices)} 个音频输入设备")
+            self.logger.info("=== 扫描结果汇总 ===")
+            self.logger.info(f"总设备数: {device_count}")
+            self.logger.info(f"有效音频输入设备数: {len(self.audio_devices)}")
+            
+            if self.audio_devices:
+                self.logger.info("有效设备列表:")
+                for device in self.audio_devices:
+                    default_mark = " (默认)" if device['is_default'] else ""
+                    self.logger.info(f"  - {device['name']}{default_mark}")
+            else:
+                self.logger.warning("未发现有效的音频输入设备")
+            
             self.update_devices_display()
             
             # 默认启动监控
