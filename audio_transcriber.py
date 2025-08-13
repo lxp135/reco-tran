@@ -275,13 +275,22 @@ class AudioTranscriber:
                     self.logger.info(f"  - 输入通道: {max_input}, 输出通道: {max_output}")
                     self.logger.info(f"  - 采样率: {sample_rate}Hz")
                     
-                    # 只添加输入设备，并过滤扬声器和麦克风
+                    # 只添加输入设备，并过滤物理音频设备（排除虚拟设备）
                     if max_input > 0:
                         device_name_lower = device_name.lower()
-                        keywords = ['麦克风', 'microphone', 'mic', '扬声器', 'speaker', 'headphone', 'headset', 'sound mapper', '声音捕获', '立体声混音', 'stereo', 'input', 'micin', 'front panel']
-                        is_valid = any(keyword in device_name_lower for keyword in keywords)
+                        # 物理设备关键词
+                        physical_keywords = ['麦克风', 'microphone', 'mic', '扬声器', 'speaker', 'headphone', 'headset', 'micin', 'front panel']
+                        # 虚拟设备关键词（需要排除）
+                        virtual_keywords = ['sound mapper', '声音捕获', '立体声混音', 'stereo mix', 'what u hear', 'loopback', 'virtual', '虚拟', 'driver', '驱动', 'mapper']
                         
-                        self.logger.info(f"  - 输入设备: 是, 关键词匹配: {'是' if is_valid else '否'}")
+                        has_physical = any(keyword in device_name_lower for keyword in physical_keywords)
+                        has_virtual = any(keyword in device_name_lower for keyword in virtual_keywords)
+                        
+                        # 只有包含物理设备关键词且不包含虚拟设备关键词的设备才被认为是有效的
+                        is_valid = has_physical and not has_virtual
+                        
+                        self.logger.info(f"  - 输入设备: 是, 物理设备匹配: {'是' if has_physical else '否'}, 虚拟设备匹配: {'是' if has_virtual else '否'}")
+                        self.logger.info(f"  - 设备类型: {'物理设备' if is_valid else ('虚拟设备' if has_virtual else '未知设备')}")
                         
                         if is_valid:
                             self.audio_devices.append({
@@ -294,9 +303,12 @@ class AudioTranscriber:
                             # 初始化设备状态
                             self.device_status[i] = {'active': False, 'level': 0}
                             self.device_enabled[i] = True  # 默认启用所有设备
-                            self.logger.info(f"  - 状态: 已添加到有效设备列表")
+                            self.logger.info(f"  - 状态: 已添加到有效设备列表（物理设备）")
                         else:
-                            self.logger.info(f"  - 状态: 已跳过（不匹配关键词）")
+                            if has_virtual:
+                                self.logger.info(f"  - 状态: 已跳过（虚拟设备）")
+                            else:
+                                self.logger.info(f"  - 状态: 已跳过（非物理设备）")
                     else:
                         self.logger.info(f"  - 输入设备: 否, 状态: 已跳过（无输入通道）")
                     
