@@ -78,7 +78,7 @@ class AudioTranscriber:
         self.setup_logging()
         self.transcription_thread = None
         self.audio_buffer = []
-        self.buffer_duration = 10  # 每10秒进行一次转写
+        self.buffer_duration = 5  # 每5秒进行一次转写
         self.last_transcription_time = 0
         
         self.setup_ui()
@@ -864,9 +864,37 @@ class AudioTranscriber:
             self.root.after(0, lambda: self.progress.stop())
             self.root.after(0, lambda: self.transcribe_button.config(state="normal"))
             
+    def filter_unwanted_text(self, text):
+        """过滤异常的推广文本"""
+        if not text:
+            return text
+            
+        # 定义需要过滤的异常文本模式
+        unwanted_patterns = [
+            "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目",
+            "请不吝点赞",
+            "订阅 转发 打赏支持明镜与点点栏目",
+            "明镜与点点栏目",
+            "点赞 订阅 转发 打赏",
+            "支持明镜与点点"
+        ]
+        
+        filtered_text = text
+        for pattern in unwanted_patterns:
+            if pattern in filtered_text:
+                filtered_text = filtered_text.replace(pattern, "")
+                self.log_info(f"已过滤异常文本: {pattern}")
+        
+        # 清理多余的空格和换行
+        filtered_text = " ".join(filtered_text.split())
+        
+        return filtered_text
+    
     def update_transcription_result(self, text):
+        # 过滤异常文本
+        filtered_text = self.filter_unwanted_text(text)
         self.text_area.delete(1.0, tk.END)
-        self.text_area.insert(1.0, text)
+        self.text_area.insert(1.0, filtered_text)
         self.save_button.config(state="normal")
         
     def save_text(self):
@@ -978,9 +1006,12 @@ class AudioTranscriber:
         
     def append_realtime_text(self, text):
         """向文本区域追加实时转写结果"""
-        self.text_area.insert(tk.END, text)
-        self.text_area.see(tk.END)  # 自动滚动到底部
-        self.save_button.config(state="normal")
+        # 过滤异常文本
+        filtered_text = self.filter_unwanted_text(text)
+        if filtered_text.strip():  # 只有过滤后还有内容才添加
+            self.text_area.insert(tk.END, filtered_text)
+            self.text_area.see(tk.END)  # 自动滚动到底部
+            self.save_button.config(state="normal")
     
     def on_engine_change(self, event=None):
         """引擎切换事件处理"""
