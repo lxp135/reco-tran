@@ -509,17 +509,22 @@ class AudioTranscriber:
                 self.status_label.config(text="正在下载并加载Whisper模型（首次使用需要下载）...")
                 self.root.update()
                 
-                # 首先尝试使用tiny模型（更小，下载更快）
+                # 优先使用small模型（平衡准确率和性能）
                 try:
-                    self.whisper_model = whisper.load_model("tiny")
-                    self.status_label.config(text="Whisper模型加载完成（tiny模型）")
+                    self.whisper_model = whisper.load_model("small")
+                    self.status_label.config(text="Whisper模型加载完成（small模型）")
                 except Exception as e1:
-                    # 如果tiny模型失败，尝试base模型
+                    # 如果small模型失败，尝试base模型
                     try:
                         self.whisper_model = whisper.load_model("base")
                         self.status_label.config(text="Whisper模型加载完成（base模型）")
                     except Exception as e2:
-                        raise Exception(f"模型下载失败。请检查网络连接。Tiny模型错误: {str(e1)}, Base模型错误: {str(e2)}")
+                        # 最后尝试tiny模型作为备选
+                        try:
+                            self.whisper_model = whisper.load_model("tiny")
+                            self.status_label.config(text="Whisper模型加载完成（tiny模型 - 准确率较低）")
+                        except Exception as e3:
+                            raise Exception(f"所有模型下载失败。请检查网络连接。Small: {str(e1)}, Base: {str(e2)}, Tiny: {str(e3)}")
                         
             except Exception as e:
                 messagebox.showerror("错误", f"加载Whisper模型失败: {str(e)}\n\n建议：\n1. 检查网络连接\n2. 确保有足够的磁盘空间\n3. 尝试重新启动程序")
@@ -534,7 +539,8 @@ class AudioTranscriber:
                 self.load_whisper_model()
             
             if self.whisper_model is not None:
-                result = self.whisper_model.transcribe(audio_file_path, language="zh")
+                # 使用自动语言检测，支持中英文混合识别
+                result = self.whisper_model.transcribe(audio_file_path, language=zh)
                 return result["text"]
             else:
                 raise Exception("Whisper模型未加载")
