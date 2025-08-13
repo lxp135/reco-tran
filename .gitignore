@@ -1,0 +1,33 @@
+# 忽略audio目录下的所有音频文件
+audio/*.mp3
+audio/*.wav
+audio/*.flac
+audio/*.m4a
+audio/*.aac
+audio/*.ogg
+audio/*.wma
+
+# 但保留audio目录本身
+!audio/
+!audio/.gitkeep
+
+# 忽略临时文件
+*.tmp
+*.temp
+
+# 忽略Python缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 忽略IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 忽略系统文件
+.DS_Store
+Thumbs.db
