@@ -278,7 +278,7 @@ class AudioTranscriber:
                     # 只添加输入设备，并过滤扬声器和麦克风
                     if max_input > 0:
                         device_name_lower = device_name.lower()
-                        keywords = ['麦克风', 'microphone', 'mic', '扬声器', 'speaker', 'headphone', 'headset']
+                        keywords = ['麦克风', 'microphone', 'mic', '扬声器', 'speaker', 'headphone', 'headset', 'sound mapper', '声音捕获', '立体声混音', 'stereo', 'input', 'micin', 'front panel']
                         is_valid = any(keyword in device_name_lower for keyword in keywords)
                         
                         self.logger.info(f"  - 输入设备: 是, 关键词匹配: {'是' if is_valid else '否'}")
