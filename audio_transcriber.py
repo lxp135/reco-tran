@@ -10,7 +10,10 @@ from datetime import datetime
 from pydub import AudioSegment
 from pydub.utils import which
 import tempfile
-import imageio_ffmpeg as ffmpeg
+import queue
+import io
+import subprocess
+import whisper
 
 class AudioTranscriber:
     def __init__(self, root):
@@ -19,39 +22,7 @@ class AudioTranscriber:
         self.root.geometry("800x600")
         self.root.resizable(True, True)
         
-        # 设置ffmpeg路径
-        try:
-            ffmpeg_path = ffmpeg.get_ffmpeg_exe()
-            # 直接设置pydub的工具路径
-            from pydub.utils import which
-            AudioSegment.converter = ffmpeg_path
-            AudioSegment.ffmpeg = ffmpeg_path
-            
-            # 尝试找到ffprobe
-            ffmpeg_dir = os.path.dirname(ffmpeg_path)
-            # 检查同目录下是否有ffprobe
-            possible_ffprobe_names = ['ffprobe.exe', 'ffprobe']
-            ffprobe_found = False
-            
-            for probe_name in possible_ffprobe_names:
-                ffprobe_path = os.path.join(ffmpeg_dir, probe_name)
-                if os.path.exists(ffprobe_path):
-                    AudioSegment.ffprobe = ffprobe_path
-                    ffprobe_found = True
-                    break
-            
-            # 如果找不到ffprobe，使用ffmpeg作为替代
-            if not ffprobe_found:
-                AudioSegment.ffprobe = ffmpeg_path
-            
-            print(f"✅ 成功设置ffmpeg路径: {ffmpeg_path}")
-            if ffprobe_found:
-                print(f"✅ 成功设置ffprobe路径: {AudioSegment.ffprobe}")
-            else:
-                print(f"⚠️  使用ffmpeg作为ffprobe替代")
-                
-        except Exception as e:
-            print(f"警告: 无法设置ffmpeg路径: {e}")
+        # ffmpeg会自动从系统PATH中查找，无需手动设置路径
         
         # 录音参数
         self.chunk = 1024
@@ -62,12 +33,25 @@ class AudioTranscriber:
         self.frames = []
         self.audio = pyaudio.PyAudio()
         self.stream = None
+        self.start_time = None
         
         # 语音识别器
         self.recognizer = sr.Recognizer()
         
+        # Whisper模型
+        self.whisper_model = None
+        self.engine_type = "google"  # 默认使用Google引擎
+        
         # 当前录音文件路径
         self.current_audio_file = None
+        
+        # 实时转写相关
+        self.real_time_transcription = False
+        self.audio_queue = queue.Queue()
+        self.transcription_thread = None
+        self.audio_buffer = []
+        self.buffer_duration = 3  # 每3秒进行一次转写
+        self.last_transcription_time = 0
         
         self.setup_ui()
         
@@ -89,19 +73,32 @@ class AudioTranscriber:
         # 录音控制区域
         control_frame = ttk.LabelFrame(main_frame, text="录音控制", padding="10")
         control_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
-        control_frame.columnconfigure(1, weight=1)
+        control_frame.columnconfigure(2, weight=1)
         
         # 录音按钮
         self.record_button = ttk.Button(control_frame, text="开始录音", command=self.toggle_recording)
         self.record_button.grid(row=0, column=0, padx=(0, 10))
         
+        # 引擎选择
+        ttk.Label(control_frame, text="识别引擎:").grid(row=0, column=1, padx=(0, 5), sticky=tk.W)
+        self.engine_var = tk.StringVar(value="google")
+        self.engine_combo = ttk.Combobox(control_frame, textvariable=self.engine_var, 
+                                        values=["google", "whisper"], state="readonly", width=10)
+        self.engine_combo.grid(row=0, column=2, padx=(0, 10))
+        self.engine_combo.bind("<<ComboboxSelected>>", self.on_engine_change)
+        
+        # 实时转写开关
+        self.realtime_var = tk.BooleanVar(value=True)
+        self.realtime_checkbox = ttk.Checkbutton(control_frame, text="实时转写", variable=self.realtime_var)
+        self.realtime_checkbox.grid(row=0, column=3, padx=(0, 10))
+        
         # 录音状态标签
         self.status_label = ttk.Label(control_frame, text="准备就绪")
-        self.status_label.grid(row=0, column=1, sticky=tk.W)
+        self.status_label.grid(row=0, column=4, sticky=tk.W)
         
         # 录音时长标签
         self.duration_label = ttk.Label(control_frame, text="时长: 00:00")
-        self.duration_label.grid(row=0, column=2)
+        self.duration_label.grid(row=0, column=5)
         
         # 文件操作区域
         file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="10")
@@ -125,11 +122,15 @@ class AudioTranscriber:
         result_frame = ttk.LabelFrame(main_frame, text="转写结果", padding="10")
         result_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         result_frame.columnconfigure(0, weight=1)
-        result_frame.rowconfigure(0, weight=1)
+        result_frame.rowconfigure(1, weight=1)
+        
+        # 实时转写状态
+        self.realtime_status = ttk.Label(result_frame, text="实时转写: 未启动", font=("Arial", 9))
+        self.realtime_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
         
         # 文本显示区域
         self.text_area = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, height=15)
-        self.text_area.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.text_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
@@ -149,9 +150,21 @@ class AudioTranscriber:
         try:
             self.recording = True
             self.frames = []
+            self.audio_buffer = []
             self.record_button.config(text="停止录音")
             self.status_label.config(text="正在录音...")
             self.status_bar.config(text="录音中...")
+            
+            # 检查是否启用实时转写
+            self.real_time_transcription = self.realtime_var.get()
+            if self.real_time_transcription:
+                self.realtime_status.config(text="实时转写: 启动中...")
+                # 启动实时转写线程
+                self.transcription_thread = threading.Thread(target=self.real_time_transcribe)
+                self.transcription_thread.daemon = True
+                self.transcription_thread.start()
+            else:
+                self.realtime_status.config(text="实时转写: 未启动")
             
             # 开始录音线程
             self.record_thread = threading.Thread(target=self.record_audio)
@@ -178,25 +191,42 @@ class AudioTranscriber:
             )
             
             self.start_time = time.time()
+            self.last_transcription_time = self.start_time
             
             while self.recording:
                 data = self.stream.read(self.chunk)
                 self.frames.append(data)
+                
+                # 如果启用实时转写，将音频数据添加到缓冲区
+                if self.real_time_transcription:
+                    self.audio_buffer.append(data)
+                    
+                    # 每隔指定时间进行一次转写
+                    current_time = time.time()
+                    if current_time - self.last_transcription_time >= self.buffer_duration:
+                        # 将缓冲区数据放入队列
+                        if self.audio_buffer:
+                            buffer_copy = self.audio_buffer.copy()
+                            self.audio_queue.put(buffer_copy)
+                            self.audio_buffer = []  # 清空缓冲区
+                            self.last_transcription_time = current_time
                 
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror("错误", f"录音过程中出错: {str(e)}"))
             
     def update_timer(self):
         while self.recording:
-            elapsed = time.time() - self.start_time
-            minutes = int(elapsed // 60)
-            seconds = int(elapsed % 60)
-            time_str = f"时长: {minutes:02d}:{seconds:02d}"
-            self.root.after(0, lambda: self.duration_label.config(text=time_str))
+            if self.start_time is not None:
+                elapsed = time.time() - self.start_time
+                minutes = int(elapsed // 60)
+                seconds = int(elapsed % 60)
+                time_str = f"时长: {minutes:02d}:{seconds:02d}"
+                self.root.after(0, lambda: self.duration_label.config(text=time_str))
             time.sleep(1)
             
     def stop_recording(self):
         self.recording = False
+        self.real_time_transcription = False
         
         if self.stream:
             self.stream.stop_stream()
@@ -205,6 +235,7 @@ class AudioTranscriber:
         self.record_button.config(text="开始录音")
         self.status_label.config(text="录音完成")
         self.status_bar.config(text="保存录音文件...")
+        self.realtime_status.config(text="实时转写: 已停止")
         
         # 保存录音文件
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -314,30 +345,37 @@ class AudioTranscriber:
             # 准备音频文件
             audio_file_to_use = self.prepare_audio_file(self.current_audio_file)
             
-            # 使用语音识别
-            with sr.AudioFile(audio_file_to_use) as source:
-                # 调整环境噪音
-                self.recognizer.adjust_for_ambient_noise(source)
-                audio_data = self.recognizer.record(source)
-                
-            # 尝试多种识别引擎
+            # 根据选择的引擎进行转写
             text = ""
-            try:
-                # 首先尝试使用Google识别（需要网络）
-                text = self.recognizer.recognize_google(audio_data, language='zh-CN')
-                self.root.after(0, lambda: self.status_bar.config(text="转写完成（使用Google引擎）"))
-            except sr.RequestError:
+            if self.engine_type == "whisper":
                 try:
-                    # 如果Google不可用，尝试使用离线识别
-                    text = self.recognizer.recognize_sphinx(audio_data, language='zh-CN')
-                    self.root.after(0, lambda: self.status_bar.config(text="转写完成（使用离线引擎）"))
-                except:
-                    text = "转写失败：无法连接到识别服务，且离线引擎不可用"
-                    
-            except sr.UnknownValueError:
-                text = "无法识别音频内容，请确保音频清晰且包含语音"
-            except Exception as e:
-                text = f"转写过程中出现错误: {str(e)}"
+                    text = self.transcribe_with_whisper(audio_file_to_use)
+                    self.root.after(0, lambda: self.status_bar.config(text="转写完成（使用Whisper引擎）"))
+                except Exception as e:
+                    text = f"Whisper转写失败: {str(e)}"
+                    self.root.after(0, lambda: self.status_bar.config(text="Whisper转写失败"))
+            else:
+                # 使用Google语音识别
+                try:
+                    with sr.AudioFile(audio_file_to_use) as source:
+                        # 调整环境噪音
+                        self.recognizer.adjust_for_ambient_noise(source)
+                        audio_data = self.recognizer.record(source)
+                        
+                    # 使用Google识别（需要网络）
+                    text = self.recognizer.recognize_google(audio_data, language='zh-CN')
+                    self.root.after(0, lambda: self.status_bar.config(text="转写完成（使用Google引擎）"))
+                except sr.RequestError:
+                    try:
+                        # 如果Google不可用，尝试使用离线识别
+                        text = self.recognizer.recognize_sphinx(audio_data, language='zh-CN')
+                        self.root.after(0, lambda: self.status_bar.config(text="转写完成（使用离线引擎）"))
+                    except:
+                        text = "转写失败：无法连接到识别服务，且离线引擎不可用"
+                except sr.UnknownValueError:
+                    text = "无法识别音频内容，请确保音频清晰且包含语音"
+                except Exception as e:
+                    text = f"转写过程中出现错误: {str(e)}"
                 
             # 更新UI
             self.root.after(0, lambda: self.update_transcription_result(text))
@@ -380,6 +418,129 @@ class AudioTranscriber:
         self.save_button.config(state="disabled")
         self.status_bar.config(text="文本已清空")
         
+    def real_time_transcribe(self):
+        """实时转写线程函数"""
+        self.root.after(0, lambda: self.realtime_status.config(text="实时转写: 运行中"))
+        
+        while self.real_time_transcription and self.recording:
+            try:
+                # 从队列中获取音频数据
+                if not self.audio_queue.empty():
+                    audio_data = self.audio_queue.get(timeout=1)
+                    
+                    # 将音频数据转换为可识别的格式
+                    audio_bytes = b''.join(audio_data)
+                    
+                    # 创建临时WAV文件
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                        wf = wave.open(temp_file.name, 'wb')
+                        wf.setnchannels(self.channels)
+                        wf.setsampwidth(self.audio.get_sample_size(self.format))
+                        wf.setframerate(self.rate)
+                        wf.writeframes(audio_bytes)
+                        wf.close()
+                        
+                        # 进行语音识别
+                        try:
+                            text = ""
+                            if self.engine_type == "whisper":
+                                try:
+                                    text = self.transcribe_with_whisper(temp_file.name)
+                                except Exception:
+                                    # Whisper识别失败，忽略
+                                    pass
+                            else:
+                                # 使用Google引擎
+                                with sr.AudioFile(temp_file.name) as source:
+                                    audio_for_recognition = self.recognizer.record(source)
+                                    
+                                try:
+                                    text = self.recognizer.recognize_google(audio_for_recognition, language='zh-CN')
+                                except sr.UnknownValueError:
+                                    # 无法识别的音频，忽略
+                                    pass
+                                except sr.RequestError:
+                                    # 网络错误，暂时忽略
+                                    pass
+                            
+                            if text and text.strip():  # 只有当识别到文本时才更新
+                                timestamp = datetime.now().strftime("%H:%M:%S")
+                                formatted_text = f"[{timestamp}] {text}\n"
+                                self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
+                                
+                        except Exception:
+                            # 处理音频文件时出错，忽略
+                            pass
+                        finally:
+                            # 清理临时文件
+                            try:
+                                os.unlink(temp_file.name)
+                            except:
+                                pass
+                                
+                else:
+                    time.sleep(0.1)  # 短暂等待
+                    
+            except queue.Empty:
+                continue
+            except Exception:
+                # 处理其他异常
+                continue
+                
+        self.root.after(0, lambda: self.realtime_status.config(text="实时转写: 已停止"))
+        
+    def append_realtime_text(self, text):
+        """向文本区域追加实时转写结果"""
+        self.text_area.insert(tk.END, text)
+        self.text_area.see(tk.END)  # 自动滚动到底部
+        self.save_button.config(state="normal")
+    
+    def on_engine_change(self, event=None):
+        """引擎切换事件处理"""
+        self.engine_type = self.engine_var.get()
+        if self.engine_type == "whisper":
+            self.load_whisper_model()
+        self.status_label.config(text=f"已切换到{self.engine_type}引擎")
+    
+    def load_whisper_model(self):
+        """加载Whisper模型"""
+        if self.whisper_model is None:
+            try:
+                self.status_label.config(text="正在下载并加载Whisper模型（首次使用需要下载）...")
+                self.root.update()
+                
+                # 首先尝试使用tiny模型（更小，下载更快）
+                try:
+                    self.whisper_model = whisper.load_model("tiny")
+                    self.status_label.config(text="Whisper模型加载完成（tiny模型）")
+                except Exception as e1:
+                    # 如果tiny模型失败，尝试base模型
+                    try:
+                        self.whisper_model = whisper.load_model("base")
+                        self.status_label.config(text="Whisper模型加载完成（base模型）")
+                    except Exception as e2:
+                        raise Exception(f"模型下载失败。请检查网络连接。Tiny模型错误: {str(e1)}, Base模型错误: {str(e2)}")
+                        
+            except Exception as e:
+                messagebox.showerror("错误", f"加载Whisper模型失败: {str(e)}\n\n建议：\n1. 检查网络连接\n2. 确保有足够的磁盘空间\n3. 尝试重新启动程序")
+                self.engine_var.set("google")
+                self.engine_type = "google"
+                self.status_label.config(text="已回退到Google引擎")
+    
+    def transcribe_with_whisper(self, audio_file_path):
+        """使用Whisper进行转写"""
+        try:
+            if self.whisper_model is None:
+                self.load_whisper_model()
+            
+            if self.whisper_model is not None:
+                result = self.whisper_model.transcribe(audio_file_path, language="zh")
+                return result["text"]
+            else:
+                raise Exception("Whisper模型未加载")
+        except Exception as e:
+            raise Exception(f"Whisper转写失败: {str(e)}")
+    
     def __del__(self):
         if hasattr(self, 'audio'):
             self.audio.terminate()
