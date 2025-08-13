@@ -753,54 +753,25 @@ class AudioTranscriber:
                 self.load_whisper_model()
             
             if self.whisper_model is not None:
-                self.log_info("开始Whisper转写，使用中文语言，启用标点符号...")
+                self.log_info("开始Whisper转写，使用中文语言...")
                 start_time = time.time()
-                # 使用中文语言，启用标点符号和文本规范化
+                # 使用中文语言，不进行自动检测
                 result = self.whisper_model.transcribe(
                     audio_file_path, 
                     language='zh',
-                    task='transcribe',
-                    word_timestamps=False,
-                    condition_on_previous_text=True,
-                    temperature=0.0,
-                    compression_ratio_threshold=2.4,
-                    logprob_threshold=-1.0,
-                    no_speech_threshold=0.6
+                    initial_prompt="以下是普通话的句子。"
                 )
                 transcribe_time = time.time() - start_time
                 
                 detected_language = result.get('language', '未知')
-                raw_text = result["text"]
-                
-                # 文本后处理：添加标点符号和规范化
-                processed_text = self.process_transcribed_text(raw_text)
-                
                 self.log_info(f"Whisper转写完成，耗时: {transcribe_time:.1f}秒, 检测语言: {detected_language}")
-                self.log_info(f"原始文本长度: {len(raw_text)}, 处理后长度: {len(processed_text)}")
                 
-                return processed_text
+                return result["text"]
             else:
                 raise Exception("Whisper模型未加载")
         except Exception as e:
             self.log_error(f"Whisper转写失败: {str(e)}")
             raise Exception(f"Whisper转写失败: {str(e)}")
-    
-    def process_transcribed_text(self, text):
-        """处理转写文本：添加标点符号，确保只有简体中文和英文"""
-        import re
-        
-        # 移除多余的空格
-        text = re.sub(r'\s+', ' ', text.strip())
-        
-        # 移除非中文、英文、数字、基本标点符号的字符
-        text = re.sub(r'[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9\s，。！？；：、""（）\(\)\[\]]+', '', text)
-        
-        # 简单的标点符号添加逻辑
-        # 在句子末尾添加句号（如果没有标点符号）
-        if text and not text[-1] in '，。！？；：':
-            text += '。'
-        
-        return text
     
     def __del__(self):
         if hasattr(self, 'audio'):
