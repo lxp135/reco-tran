@@ -18,6 +18,11 @@ import logging
 from logging.handlers import QueueHandler
 import torch
 import numpy as np
+try:
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
 
 class QueueLogHandler(QueueHandler):
     """自定义队列日志处理器"""
@@ -64,7 +69,9 @@ class AudioTranscriber:
         
         # Whisper模型
         self.whisper_model = None
+        self.belle_pipeline = None  # BELLE模型管道
         self.engine_type = "google"  # 默认使用Google引擎
+        self.model_type = "belle"  # 默认使用BELLE模型
         
         # 当前录音文件路径
         self.current_audio_file = None
@@ -1022,7 +1029,7 @@ class AudioTranscriber:
     
     def load_whisper_model(self):
         """加载Whisper模型"""
-        if self.whisper_model is None:
+        if self.belle_pipeline is None and self.whisper_model is None:
             try:
                 # 检测GPU可用性
                 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1035,7 +1042,59 @@ class AudioTranscriber:
                 else:
                     self.log_info("未检测到GPU设备，将使用CPU运行")
                 
-                self.log_info(f"开始加载Whisper模型，设备: {device} {gpu_info}")
+                # 优先尝试加载BELLE模型
+                if TRANSFORMERS_AVAILABLE and self.model_type == "belle":
+                    try:
+                        self.log_info(f"开始加载BELLE-2/Belle-whisper-large-v3-turbo-zh模型，设备: {device} {gpu_info}")
+                        self.status_label.config(text=f"正在下载并加载BELLE模型（首次使用需要下载）- {device.upper()}模式...")
+                        self.root.update()
+                        
+                        start_time = time.time()
+                        
+                        # 加载BELLE模型
+                        model_id = "BELLE-2/Belle-whisper-large-v3-turbo-zh"
+                        
+                        # 设置torch数据类型
+                        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+                        
+                        # 加载模型
+                        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                            model_id, 
+                            torch_dtype=torch_dtype, 
+                            low_cpu_mem_usage=True, 
+                            use_safetensors=True
+                        )
+                        model.to(device)
+                        
+                        # 加载处理器
+                        processor = AutoProcessor.from_pretrained(model_id)
+                        
+                        # 创建管道
+                        self.belle_pipeline = pipeline(
+                            "automatic-speech-recognition",
+                            model=model,
+                            tokenizer=processor.tokenizer,
+                            feature_extractor=processor.feature_extractor,
+                            max_new_tokens=128,
+                            chunk_length_s=30,
+                            batch_size=16,
+                            return_timestamps=True,
+                            torch_dtype=torch_dtype,
+                            device=device,
+                        )
+                        
+                        load_time = time.time() - start_time
+                        self.status_label.config(text=f"BELLE模型加载完成 - {device.upper()}")
+                        self.log_info(f"BELLE-2/Belle-whisper-large-v3-turbo-zh模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
+                        return
+                        
+                    except Exception as e:
+                        self.log_warning(f"BELLE模型加载失败: {str(e)}")
+                        self.log_info("回退到原生Whisper模型...")
+                        self.model_type = "whisper"
+                
+                # 如果BELLE模型加载失败或不可用，使用原生Whisper模型
+                self.log_info(f"开始加载原生Whisper模型，设备: {device} {gpu_info}")
                 self.status_label.config(text=f"正在下载并加载Whisper模型（首次使用需要下载）- {device.upper()}模式...")
                 self.root.update()
                 
@@ -1084,7 +1143,7 @@ class AudioTranscriber:
                         
             except Exception as e:
                 self.log_error(f"Whisper模型加载失败: {str(e)}")
-                messagebox.showerror("错误", f"加载Whisper模型失败: {str(e)}\n\n建议：\n1. 检查网络连接\n2. 确保有足够的磁盘空间\n3. 尝试重新启动程序")
+                messagebox.showerror("错误", f"加载Whisper模型失败: {str(e)}\n\n建议：\n1. 检查网络连接\n2. 确保有足够的磁盘空间\n3. 安装transformers库: pip install transformers\n4. 尝试重新启动程序")
                 self.engine_var.set("google")
                 self.engine_type = "google"
                 self.status_label.config(text="已回退到Google引擎")
@@ -1093,11 +1152,36 @@ class AudioTranscriber:
     def transcribe_with_whisper(self, audio_file_path):
         """使用Whisper进行转写"""
         try:
-            if self.whisper_model is None:
+            if self.belle_pipeline is None and self.whisper_model is None:
                 self.load_whisper_model()
             
-            if self.whisper_model is not None:
-                self.log_info("开始Whisper转写，使用中文语言...")
+            # 优先使用BELLE模型
+            if self.belle_pipeline is not None:
+                self.log_info("开始BELLE模型转写，专为中文优化...")
+                start_time = time.time()
+                
+                # 使用BELLE模型进行转写
+                result = self.belle_pipeline(
+                    audio_file_path,
+                    generate_kwargs={"language": "chinese", "task": "transcribe"}
+                )
+                
+                transcribe_time = time.time() - start_time
+                
+                # 提取转写文本
+                if isinstance(result, dict) and "text" in result:
+                    text = result["text"]
+                elif isinstance(result, list) and len(result) > 0 and "text" in result[0]:
+                    text = result[0]["text"]
+                else:
+                    text = str(result)
+                
+                self.log_info(f"BELLE模型转写完成，耗时: {transcribe_time:.1f}秒")
+                return text
+                
+            # 如果BELLE模型不可用，使用原生Whisper模型
+            elif self.whisper_model is not None:
+                self.log_info("开始原生Whisper转写，使用中文语言...")
                 start_time = time.time()
                 # 使用中文语言，不进行自动检测
                 result = self.whisper_model.transcribe(
@@ -1108,7 +1192,7 @@ class AudioTranscriber:
                 transcribe_time = time.time() - start_time
                 
                 detected_language = result.get('language', '未知')
-                self.log_info(f"Whisper转写完成，耗时: {transcribe_time:.1f}秒, 检测语言: {detected_language}")
+                self.log_info(f"原生Whisper转写完成，耗时: {transcribe_time:.1f}秒, 检测语言: {detected_language}")
                 
                 return result["text"]
             else:
