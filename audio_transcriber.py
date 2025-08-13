@@ -695,38 +695,48 @@ class AudioTranscriber:
                 self.status_label.config(text=f"正在下载并加载Whisper模型（首次使用需要下载）- {device.upper()}模式...")
                 self.root.update()
                 
-                # 优先使用small模型（平衡准确率和性能）
+                # 优先使用turbo模型（最新最快模型）
                 try:
-                    self.log_info("尝试加载small模型...")
+                    self.log_info("尝试加载turbo模型...")
                     start_time = time.time()
-                    self.whisper_model = whisper.load_model("small", device=device)
+                    self.whisper_model = whisper.load_model("turbo", device=device)
                     load_time = time.time() - start_time
-                    self.status_label.config(text=f"Whisper模型加载完成（small模型 - {device.upper()}）")
-                    self.log_info(f"small模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
+                    self.status_label.config(text=f"Whisper模型加载完成（turbo模型 - {device.upper()}）")
+                    self.log_info(f"turbo模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
                 except Exception as e1:
-                    self.log_warning(f"small模型加载失败: {str(e1)}")
-                    # 如果small模型失败，尝试base模型
+                    self.log_warning(f"turbo模型加载失败: {str(e1)}")
+                    # 如果turbo模型失败，尝试small模型
                     try:
-                        self.log_info("尝试加载base模型...")
+                        self.log_info("尝试加载small模型...")
                         start_time = time.time()
-                        self.whisper_model = whisper.load_model("base", device=device)
+                        self.whisper_model = whisper.load_model("small", device=device)
                         load_time = time.time() - start_time
-                        self.status_label.config(text=f"Whisper模型加载完成（base模型 - {device.upper()}）")
-                        self.log_info(f"base模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
+                        self.status_label.config(text=f"Whisper模型加载完成（small模型 - {device.upper()}）")
+                        self.log_info(f"small模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
                     except Exception as e2:
-                        self.log_warning(f"base模型加载失败: {str(e2)}")
-                        # 最后尝试tiny模型作为备选
+                        self.log_warning(f"small模型加载失败: {str(e2)}")
+                        # 如果small模型失败，尝试base模型
                         try:
-                            self.log_info("尝试加载tiny模型...")
+                            self.log_info("尝试加载base模型...")
                             start_time = time.time()
-                            self.whisper_model = whisper.load_model("tiny", device=device)
+                            self.whisper_model = whisper.load_model("base", device=device)
                             load_time = time.time() - start_time
-                            self.status_label.config(text=f"Whisper模型加载完成（tiny模型 - {device.upper()} - 准确率较低）")
-                            self.log_warning(f"tiny模型加载成功，耗时: {load_time:.1f}秒，设备: {device}（注意：准确率较低）")
+                            self.status_label.config(text=f"Whisper模型加载完成（base模型 - {device.upper()}）")
+                            self.log_info(f"base模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
                         except Exception as e3:
-                            error_msg = f"所有模型下载失败。Small: {str(e1)}, Base: {str(e2)}, Tiny: {str(e3)}"
-                            self.log_error(error_msg)
-                            raise Exception(error_msg)
+                            self.log_warning(f"base模型加载失败: {str(e3)}")
+                            # 最后尝试tiny模型作为备选
+                            try:
+                                self.log_info("尝试加载tiny模型...")
+                                start_time = time.time()
+                                self.whisper_model = whisper.load_model("tiny", device=device)
+                                load_time = time.time() - start_time
+                                self.status_label.config(text=f"Whisper模型加载完成（tiny模型 - {device.upper()} - 准确率较低）")
+                                self.log_warning(f"tiny模型加载成功，耗时: {load_time:.1f}秒，设备: {device}（注意：准确率较低）")
+                            except Exception as e4:
+                                error_msg = f"所有模型下载失败。Turbo: {str(e1)}, Small: {str(e2)}, Base: {str(e3)}, Tiny: {str(e4)}"
+                                self.log_error(error_msg)
+                                raise Exception(error_msg)
                         
             except Exception as e:
                 self.log_error(f"Whisper模型加载失败: {str(e)}")
