@@ -139,13 +139,7 @@ class AudioTranscriber:
         audio_source_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         audio_source_frame.columnconfigure(0, weight=1)
         
-        # 音频源控制按钮
-        source_control_frame = ttk.Frame(audio_source_frame)
-        source_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        ttk.Button(source_control_frame, text="刷新设备", command=self.refresh_audio_devices).grid(row=0, column=0, padx=(0, 10))
-        self.monitoring_button = ttk.Button(source_control_frame, text="停止监控", command=self.toggle_device_monitoring)
-        self.monitoring_button.grid(row=0, column=1, padx=(0, 10))
+
         
         # 音频设备列表框架 - 使用固定布局，不使用滚动条
         self.devices_frame = ttk.Frame(audio_source_frame)
@@ -376,20 +370,12 @@ class AudioTranscriber:
         status = "启用" if enabled else "禁用"
         self.logger.info(f"{status}音频设备: {device_name}")
     
-    def toggle_device_monitoring(self):
-        """切换设备监控状态"""
-        if self.monitoring_active:
-            self.stop_device_monitoring()
-        else:
-            self.start_device_monitoring()
-    
     def start_device_monitoring(self):
         """开始监控音频设备"""
         if self.monitoring_active:
             return
         
         self.monitoring_active = True
-        self.monitoring_button.config(text="停止监控")
         self.logger.info("开始监控音频设备状态...")
         
         # 为每个启用的设备创建监控线程
@@ -402,11 +388,10 @@ class AudioTranscriber:
                 )
                 monitor_thread.start()
                 self.device_monitors[device['index']] = monitor_thread
-    
+
     def stop_device_monitoring(self):
         """停止监控音频设备"""
         self.monitoring_active = False
-        self.monitoring_button.config(text="开始监控")
         self.logger.info("停止监控音频设备状态")
         
         # 重置所有设备状态
