@@ -59,10 +59,17 @@ class AudioTranscriber:
         # 音频设备相关
         self.audio_devices = []
         self.selected_device_index = None
+        self.microphone_device_index = None  # 麦克风设备索引
+        self.system_audio_device_index = None  # 系统音频设备索引
         
         # 麦克风控制
         self.microphone_enabled = True  # 麦克风启用状态
+        self.system_audio_enabled = True  # 系统音频启用状态
         self.audio_gain = 1.0  # 音频增益倍数，默认为1.0（无增益）
+        
+        # 音频流
+        self.microphone_stream = None
+        self.system_audio_stream = None
         
         # 语音识别器
         self.recognizer = sr.Recognizer()
@@ -93,6 +100,9 @@ class AudioTranscriber:
         
         # 启动日志更新线程
         self.start_log_updater()
+        
+        # 初始化音频设备
+        self.initialize_audio_devices()
         
     def setup_ui(self):
         # 主框架
@@ -138,18 +148,23 @@ class AudioTranscriber:
         self.microphone_checkbox = ttk.Checkbutton(control_frame, text="麦克风", variable=self.microphone_var, command=self.toggle_microphone)
         self.microphone_checkbox.grid(row=0, column=4, padx=(0, 10))
         
+        # 系统音频开关
+        self.system_audio_var = tk.BooleanVar(value=True)
+        self.system_audio_checkbox = ttk.Checkbutton(control_frame, text="系统音频", variable=self.system_audio_var, command=self.toggle_system_audio)
+        self.system_audio_checkbox.grid(row=0, column=5, padx=(0, 10))
+        
         # 音频增益控制
-        ttk.Label(control_frame, text="增益:").grid(row=0, column=5, padx=(0, 5), sticky=tk.W)
+        ttk.Label(control_frame, text="增益:").grid(row=0, column=6, padx=(0, 5), sticky=tk.W)
         self.gain_var = tk.DoubleVar(value=1.0)
         self.gain_scale = ttk.Scale(control_frame, from_=0.1, to=5.0, variable=self.gain_var, 
                                    orient=tk.HORIZONTAL, length=80, command=self.on_gain_change)
-        self.gain_scale.grid(row=0, column=6, padx=(0, 5))
+        self.gain_scale.grid(row=0, column=7, padx=(0, 5))
         self.gain_label = ttk.Label(control_frame, text="1.0x")
-        self.gain_label.grid(row=0, column=7, padx=(0, 10))
+        self.gain_label.grid(row=0, column=8, padx=(0, 10))
         
         # 录音状态标签
         self.status_label = ttk.Label(control_frame, text="准备就绪")
-        self.status_label.grid(row=0, column=8, sticky=tk.W)
+        self.status_label.grid(row=0, column=9, sticky=tk.W)
         
         # 录音时长标签
         self.duration_label = ttk.Label(control_frame, text="时长: 00:00")
@@ -259,8 +274,46 @@ class AudioTranscriber:
     
     def initialize_audio_devices(self):
         """初始化音频设备列表"""
-        # 音频源控制功能已移除
-        pass
+        try:
+            device_count = self.audio.get_device_count()
+            self.audio_devices = []
+            
+            for i in range(device_count):
+                try:
+                    device_info = self.audio.get_device_info_by_index(i)
+                    if device_info['maxInputChannels'] > 0:  # 只考虑输入设备
+                        self.audio_devices.append({
+                            'index': i,
+                            'name': device_info['name'],
+                            'channels': device_info['maxInputChannels'],
+                            'sample_rate': int(device_info['defaultSampleRate'])
+                        })
+                        
+                        # 尝试识别麦克风和立体声混音设备
+                        device_name_lower = device_info['name'].lower()
+                        if any(keyword in device_name_lower for keyword in ['麦克风', 'microphone', 'mic']):
+                            if self.microphone_device_index is None:
+                                self.microphone_device_index = i
+                                self.log_info(f"检测到麦克风设备: {device_info['name']}")
+                        elif any(keyword in device_name_lower for keyword in ['立体声混音', 'stereo mix', 'what u hear', 'loopback']):
+                            if self.system_audio_device_index is None:
+                                self.system_audio_device_index = i
+                                self.log_info(f"检测到系统音频设备: {device_info['name']}")
+                                
+                except Exception as e:
+                    self.log_warning(f"无法获取设备 {i} 的信息: {e}")
+                    
+            # 如果没有找到特定设备，使用默认设备
+            if self.microphone_device_index is None:
+                try:
+                    default_device = self.audio.get_default_input_device_info()
+                    self.microphone_device_index = default_device['index']
+                    self.log_info(f"使用默认输入设备作为麦克风: {default_device['name']}")
+                except Exception as e:
+                    self.log_error(f"无法获取默认输入设备: {e}")
+                    
+        except Exception as e:
+            self.log_error(f"初始化音频设备失败: {e}")
     
     def refresh_audio_devices(self):
         """刷新音频设备列表"""
@@ -376,8 +429,19 @@ class AudioTranscriber:
         # 如果正在录音且麦克风被禁用，提示用户
         if self.recording and not self.microphone_enabled:
             self.log_warning("麦克风已禁用，录音将继续但不会接收麦克风音频")
-        elif self.recording and self.microphone_enabled:
-            self.log_info("麦克风已重新启用，开始接收音频输入")
+    
+    def toggle_system_audio(self):
+        """切换系统音频启用状态"""
+        self.system_audio_enabled = self.system_audio_var.get()
+        status = "启用" if self.system_audio_enabled else "禁用"
+        self.log_info(f"系统音频已{status}")
+        
+        # 如果正在录音，提示用户
+        if self.recording:
+            if self.system_audio_enabled:
+                self.log_info("系统音频重新启用，开始录制系统声音")
+            else:
+                self.log_warning("系统音频已禁用，录音将继续但不会接收系统音频")
     
     def on_gain_change(self, value):
         """音频增益变化回调"""
@@ -443,68 +507,157 @@ class AudioTranscriber:
             
     def record_audio(self):
         try:
-            # 获取默认音频设备
-            try:
-                default_device_info = self.audio.get_default_input_device_info()
-                selected_device = {
-                    'index': default_device_info['index'],
-                    'name': default_device_info['name']
-                }
-            except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("错误", f"无法获取音频设备: {e}"))
-                return
+            # 初始化音频流
+            streams_info = []
             
-            self.stream = self.audio.open(
-                format=self.format,
-                channels=self.channels,
-                rate=self.rate,
-                input=True,
-                input_device_index=selected_device['index'],
-                frames_per_buffer=self.chunk
-            )
+            # 设置麦克风流
+            if self.microphone_enabled and self.microphone_device_index is not None:
+                try:
+                    self.microphone_stream = self.audio.open(
+                        format=self.format,
+                        channels=self.channels,
+                        rate=self.rate,
+                        input=True,
+                        input_device_index=self.microphone_device_index,
+                        frames_per_buffer=self.chunk
+                    )
+                    mic_device_info = self.audio.get_device_info_by_index(self.microphone_device_index)
+                    streams_info.append(f"麦克风: {mic_device_info['name']}")
+                    self.log_info(f"麦克风流已启动: {mic_device_info['name']}")
+                except Exception as e:
+                    self.log_error(f"无法启动麦克风流: {e}")
+                    self.microphone_stream = None
             
-            self.log_info(f"音频流配置: {self.rate}Hz, {self.channels}声道, 缓冲区大小: {self.chunk}, 设备: {selected_device['name']}")
+            # 设置系统音频流
+            if self.system_audio_enabled and self.system_audio_device_index is not None:
+                try:
+                    self.system_audio_stream = self.audio.open(
+                        format=self.format,
+                        channels=self.channels,
+                        rate=self.rate,
+                        input=True,
+                        input_device_index=self.system_audio_device_index,
+                        frames_per_buffer=self.chunk
+                    )
+                    sys_device_info = self.audio.get_device_info_by_index(self.system_audio_device_index)
+                    streams_info.append(f"系统音频: {sys_device_info['name']}")
+                    self.log_info(f"系统音频流已启动: {sys_device_info['name']}")
+                except Exception as e:
+                    self.log_error(f"无法启动系统音频流: {e}")
+                    self.system_audio_stream = None
+            
+            # 如果没有可用的音频流，使用默认设备
+            if self.microphone_stream is None and self.system_audio_stream is None:
+                try:
+                    default_device_info = self.audio.get_default_input_device_info()
+                    self.stream = self.audio.open(
+                        format=self.format,
+                        channels=self.channels,
+                        rate=self.rate,
+                        input=True,
+                        input_device_index=default_device_info['index'],
+                        frames_per_buffer=self.chunk
+                    )
+                    streams_info.append(f"默认设备: {default_device_info['name']}")
+                    self.log_info(f"使用默认音频设备: {default_device_info['name']}")
+                except Exception as e:
+                    self.root.after(0, lambda: messagebox.showerror("错误", f"无法获取音频设备: {e}"))
+                    return
+            
+            self.log_info(f"音频流配置: {self.rate}Hz, {self.channels}声道, 缓冲区: {self.chunk}, 活跃流: {', '.join(streams_info)}")
             
             self.start_time = time.time()
             self.last_transcription_time = self.start_time
             
             while self.recording:
                 try:
-                    data = self.stream.read(self.chunk)
+                    # 初始化混合音频数据
+                    mixed_data = np.zeros(self.chunk, dtype=np.int16)
+                    has_audio = False
                     
-                    # 动态检查麦克风状态
-                    if not self.microphone_enabled:
-                        # 麦克风被禁用时，使用静音数据替代麦克风输入
-                        silent_data = b'\x00' * (self.chunk * 2)  # 16位音频，每个样本2字节
-                        self.frames.append(silent_data)
+                    # 读取麦克风数据
+                    if self.microphone_enabled and self.microphone_stream is not None:
+                        try:
+                            mic_data = self.microphone_stream.read(self.chunk, exception_on_overflow=False)
+                            mic_array = np.frombuffer(mic_data, dtype=np.int16)
+                            mixed_data = mixed_data + mic_array
+                            has_audio = True
+                        except Exception as e:
+                            self.log_warning(f"麦克风读取错误: {e}")
+                    
+                    # 读取系统音频数据
+                    if self.system_audio_enabled and self.system_audio_stream is not None:
+                        try:
+                            sys_data = self.system_audio_stream.read(self.chunk, exception_on_overflow=False)
+                            sys_array = np.frombuffer(sys_data, dtype=np.int16)
+                            mixed_data = mixed_data + sys_array
+                            has_audio = True
+                        except Exception as e:
+                            self.log_warning(f"系统音频读取错误: {e}")
+                    
+                    # 如果使用默认设备
+                    if hasattr(self, 'stream') and self.stream is not None:
+                        try:
+                            data = self.stream.read(self.chunk, exception_on_overflow=False)
+                            if self.microphone_enabled:  # 只有在麦克风启用时才使用默认设备数据
+                                default_array = np.frombuffer(data, dtype=np.int16)
+                                mixed_data = mixed_data + default_array
+                                has_audio = True
+                        except Exception as e:
+                            self.log_warning(f"默认设备读取错误: {e}")
+                    
+                    # 处理混合后的音频数据
+                    if has_audio:
+                        # 防止溢出，限制在int16范围内
+                        mixed_data = np.clip(mixed_data, -32768, 32767)
+                        # 应用增益
+                        if self.audio_gain != 1.0:
+                            mixed_data = mixed_data.astype(np.float32) * self.audio_gain
+                            mixed_data = np.clip(mixed_data, -32768, 32767).astype(np.int16)
                         
-                        # 麦克风禁用时不进行实时转写，因为没有有效音频
-                        # 实时转写功能在麦克风禁用时暂停
+                        final_data = mixed_data.tobytes()
                     else:
-                         # 麦克风启用时，不应用增益，保持原始音频
-                         self.frames.append(data)
-                         
-                         # 如果启用实时转写，将音频数据添加到缓冲区
-                         if self.real_time_transcription:
-                             self.audio_buffer.append(data)
-                             
-                             # 每隔指定时间进行一次转写
-                             current_time = time.time()
-                             if current_time - self.last_transcription_time >= self.buffer_duration:
-                                 # 将缓冲区数据放入队列
-                                 if self.audio_buffer:
-                                     buffer_copy = self.audio_buffer.copy()
-                                     self.transcription_queue.put(buffer_copy)
-                                     self.audio_buffer.clear()
-                                     self.last_transcription_time = current_time
+                        # 如果没有音频数据，使用静音
+                        final_data = b'\x00' * (self.chunk * 2)
+                    
+                    self.frames.append(final_data)
+                    
+                    # 实时转写处理
+                    if self.real_time_transcription and has_audio:
+                        self.audio_buffer.append(final_data)
+                        
+                        current_time = time.time()
+                        if current_time - self.last_transcription_time >= self.buffer_duration:
+                            if self.audio_buffer:
+                                buffer_copy = self.audio_buffer.copy()
+                                self.transcription_queue.put(buffer_copy)
+                                self.audio_buffer.clear()
+                                self.last_transcription_time = current_time
+                                
                 except Exception as e:
-                    self.log_error(f"音频读取错误: {e}")
-                    # 发生错误时也添加静音数据保持录音连续性
+                    self.log_error(f"音频处理错误: {e}")
+                    # 发生错误时添加静音数据保持录音连续性
                     silent_data = b'\x00' * (self.chunk * 2)
                     self.frames.append(silent_data)
                 
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror("错误", f"录音过程中出错: {str(e)}"))
+        finally:
+            # 清理音频流
+            if hasattr(self, 'microphone_stream') and self.microphone_stream is not None:
+                try:
+                    self.microphone_stream.stop_stream()
+                    self.microphone_stream.close()
+                    self.microphone_stream = None
+                except:
+                    pass
+            if hasattr(self, 'system_audio_stream') and self.system_audio_stream is not None:
+                try:
+                    self.system_audio_stream.stop_stream()
+                    self.system_audio_stream.close()
+                    self.system_audio_stream = None
+                except:
+                    pass
     
     def get_selected_device(self):
         """获取当前选中的音频设备"""
@@ -538,10 +691,40 @@ class AudioTranscriber:
         self.recording = False
         self.real_time_transcription = False
         
-        if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
-            self.log_info("音频流已关闭")
+        # 清理所有音频流
+        streams_closed = []
+        
+        if hasattr(self, 'stream') and self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+                self.stream = None
+                streams_closed.append("默认流")
+            except Exception as e:
+                self.log_warning(f"关闭默认流时出错: {e}")
+        
+        if hasattr(self, 'microphone_stream') and self.microphone_stream:
+            try:
+                self.microphone_stream.stop_stream()
+                self.microphone_stream.close()
+                self.microphone_stream = None
+                streams_closed.append("麦克风流")
+            except Exception as e:
+                self.log_warning(f"关闭麦克风流时出错: {e}")
+        
+        if hasattr(self, 'system_audio_stream') and self.system_audio_stream:
+            try:
+                self.system_audio_stream.stop_stream()
+                self.system_audio_stream.close()
+                self.system_audio_stream = None
+                streams_closed.append("系统音频流")
+            except Exception as e:
+                self.log_warning(f"关闭系统音频流时出错: {e}")
+        
+        if streams_closed:
+            self.log_info(f"音频流已关闭: {', '.join(streams_closed)}")
+        else:
+            self.log_info("没有活跃的音频流需要关闭")
             
         self.record_button.config(text="开始录音")
         self.status_label.config(text="录音完成")
