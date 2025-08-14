@@ -474,31 +474,12 @@ class AudioTranscriber:
                     
                     # 动态检查麦克风状态
                     if not self.microphone_enabled:
-                        # 麦克风被禁用时，只对设备内部音源应用增益
-                        if self.audio_gain != 1.0:
-                            # 将字节数据转换为numpy数组
-                            audio_array = np.frombuffer(data, dtype=np.int16)
-                            # 应用增益并限制在int16范围内
-                            audio_array = audio_array.astype(np.float32) * self.audio_gain
-                            audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
-                            # 转换回字节数据
-                            data = audio_array.tobytes()
+                        # 麦克风被禁用时，使用静音数据替代麦克风输入
+                        silent_data = b'\x00' * (self.chunk * 2)  # 16位音频，每个样本2字节
+                        self.frames.append(silent_data)
                         
-                        self.frames.append(data)
-                        
-                        # 如果启用实时转写，将音频数据添加到缓冲区
-                        if self.real_time_transcription:
-                            self.audio_buffer.append(data)
-                            
-                            # 每隔指定时间进行一次转写
-                            current_time = time.time()
-                            if current_time - self.last_transcription_time >= self.buffer_duration:
-                                # 将缓冲区数据放入队列
-                                if self.audio_buffer:
-                                    buffer_copy = self.audio_buffer.copy()
-                                    self.transcription_queue.put(buffer_copy)
-                                    self.audio_buffer.clear()
-                                    self.last_transcription_time = current_time
+                        # 麦克风禁用时不进行实时转写，因为没有有效音频
+                        # 实时转写功能在麦克风禁用时暂停
                     else:
                          # 麦克风启用时，不应用增益，保持原始音频
                          self.frames.append(data)
