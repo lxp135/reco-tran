@@ -18,6 +18,8 @@ import logging
 from logging.handlers import QueueHandler
 import torch
 import numpy as np
+import psutil
+import gc
 try:
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
     TRANSFORMERS_AVAILABLE = True
@@ -388,10 +390,12 @@ class AudioTranscriber:
             self.log_area.config(state=tk.NORMAL)
             self.log_area.insert(tk.END, formatted_message + "\n")
             
-            # 限制日志行数（保留最近1000行）
-            lines = self.log_area.get("1.0", tk.END).split("\n")
-            if len(lines) > 1000:
-                self.log_area.delete("1.0", f"{len(lines)-1000}.0")
+            # 限制日志行数（保留最近500行），减少内存使用
+            line_count = int(self.log_area.index('end-1c').split('.')[0])
+            if line_count > 500:
+                # 删除前面的行，保留最近的500行
+                delete_lines = line_count - 500
+                self.log_area.delete("1.0", f"{delete_lines + 1}.0")
             
             # 自动滚动到底部
             if self.auto_scroll_var.get():
@@ -472,8 +476,28 @@ class AudioTranscriber:
             
             self.log_info("开始录音...")
             self.recording = True
+            
+            # 清空所有音频数据和缓冲区，防止内存累积
             self.frames = []
             self.audio_buffer = []
+            
+            # 清空转写队列
+            if hasattr(self, 'transcription_queue'):
+                while not self.transcription_queue.empty():
+                    try:
+                        self.transcription_queue.get_nowait()
+                    except queue.Empty:
+                        break
+            
+            # 强制垃圾回收
+            gc.collect()
+            
+            # 获取内存使用情况
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            memory_mb = memory_info.rss / 1024 / 1024
+            
+            self.log_info(f"音频缓冲区已清空，开始新的录音会话，当前内存使用: {memory_mb:.1f}MB")
             self.record_button.config(text="停止录音")
             self.status_label.config(text="正在录音...")
             self.status_bar.config(text="录音中...")
@@ -626,11 +650,21 @@ class AudioTranscriber:
                     if self.real_time_transcription and has_audio:
                         self.audio_buffer.append(final_data)
                         
+                        # 限制音频缓冲区大小，防止内存溢出
+                        max_buffer_size = self.rate * self.buffer_duration * 2  # 2字节per sample
+                        if len(self.audio_buffer) * self.chunk * 2 > max_buffer_size:
+                            # 移除最旧的数据
+                            self.audio_buffer.pop(0)
+                        
                         current_time = time.time()
                         if current_time - self.last_transcription_time >= self.buffer_duration:
                             if self.audio_buffer:
-                                buffer_copy = self.audio_buffer.copy()
-                                self.transcription_queue.put(buffer_copy)
+                                # 限制转写队列大小，防止堆积
+                                if self.transcription_queue.qsize() < 5:  # 最多保留5个待处理项目
+                                    buffer_copy = self.audio_buffer.copy()
+                                    self.transcription_queue.put(buffer_copy)
+                                else:
+                                    self.log_warning("转写队列已满，跳过本次转写")
                                 self.audio_buffer.clear()
                                 self.last_transcription_time = current_time
                                 
@@ -721,6 +755,27 @@ class AudioTranscriber:
             except Exception as e:
                 self.log_warning(f"关闭系统音频流时出错: {e}")
         
+        # 清理内存中的音频数据和队列
+        try:
+            # 清空音频缓冲区
+            if hasattr(self, 'audio_buffer'):
+                self.audio_buffer.clear()
+                
+            # 清空转写队列
+            if hasattr(self, 'transcription_queue'):
+                while not self.transcription_queue.empty():
+                    try:
+                        self.transcription_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                        
+            # 记录内存清理信息
+            frames_count = len(self.frames) if hasattr(self, 'frames') else 0
+            self.log_info(f"清理内存数据: {frames_count} 个音频帧")
+            
+        except Exception as e:
+            self.log_warning(f"清理内存数据时出错: {e}")
+        
         if streams_closed:
             self.log_info(f"音频流已关闭: {', '.join(streams_closed)}")
         else:
@@ -751,6 +806,19 @@ class AudioTranscriber:
             wf.writeframes(b''.join(self.frames))
             wf.close()
             
+            # 保存完成后立即清空frames列表释放内存
+            self.frames.clear()
+            
+            # 强制垃圾回收释放内存
+            gc.collect()
+            
+            # 获取内存使用情况
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            memory_mb = memory_info.rss / 1024 / 1024
+            
+            self.log_info(f"音频帧数据已清空，内存使用: {memory_mb:.1f}MB")
+            
             self.transcribe_button.config(state="normal")
             self.status_bar.config(text=f"录音已保存: {filename}")
             
@@ -762,6 +830,9 @@ class AudioTranscriber:
         except Exception as e:
             self.log_error(f"保存录音文件失败: {str(e)}")
             messagebox.showerror("错误", f"保存录音文件失败: {str(e)}")
+            # 即使保存失败也要清空frames避免内存泄漏
+            self.frames.clear()
+            self.log_info("清空音频帧数据以释放内存")
             
     def open_audio_file(self):
         # 设置默认目录为audio子目录
@@ -985,27 +1056,30 @@ class AudioTranscriber:
                     audio_bytes = b''.join(audio_data)
                     
                     # 创建临时WAV文件
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                        wf = wave.open(temp_file.name, 'wb')
-                        wf.setnchannels(self.channels)
-                        wf.setsampwidth(self.audio.get_sample_size(self.format))
-                        wf.setframerate(self.rate)
-                        wf.writeframes(audio_bytes)
-                        wf.close()
+                    temp_file_path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                            temp_file_path = temp_file.name
+                            wf = wave.open(temp_file_path, 'wb')
+                            wf.setnchannels(self.channels)
+                            wf.setsampwidth(self.audio.get_sample_size(self.format))
+                            wf.setframerate(self.rate)
+                            wf.writeframes(audio_bytes)
+                            wf.close()
                         
                         # 进行语音识别
-                        try:
-                            text = ""
-                            if self.engine_type == "whisper":
-                                try:
-                                    text = self.transcribe_with_whisper(temp_file.name)
-                                except Exception as e:
-                                    # Whisper识别失败，记录日志但继续
-                                    if transcription_count % 10 == 1:  # 每10次记录一次错误，避免日志过多
-                                        self.log_warning(f"实时Whisper转写失败: {str(e)}")
-                            else:
-                                # 使用Google引擎
-                                with sr.AudioFile(temp_file.name) as source:
+                        text = ""
+                        if self.engine_type == "whisper":
+                            try:
+                                text = self.transcribe_with_whisper(temp_file_path)
+                            except Exception as e:
+                                # Whisper识别失败，记录日志但继续
+                                if transcription_count % 10 == 1:  # 每10次记录一次错误，避免日志过多
+                                    self.log_warning(f"实时Whisper转写失败: {str(e)}")
+                        else:
+                            # 使用Google引擎
+                            try:
+                                with sr.AudioFile(temp_file_path) as source:
                                     audio_for_recognition = self.recognizer.record(source)
                                     
                                 try:
@@ -1017,23 +1091,28 @@ class AudioTranscriber:
                                     # 网络错误，记录日志但继续
                                     if transcription_count % 10 == 1:
                                         self.log_warning(f"实时Google转写网络错误: {str(e)}")
+                            except Exception as e:
+                                if transcription_count % 10 == 1:
+                                    self.log_error(f"音频文件处理错误: {str(e)}")
+                        
+                        if text and text.strip():  # 只有当识别到文本时才更新
+                            timestamp = datetime.now().strftime("%H:%M:%S")
+                            formatted_text = f"[{timestamp}] {text}\n"
+                            self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
+                            self.log_info(f"实时转写成功 #{transcription_count}: {text[:50]}{'...' if len(text) > 50 else ''}")
                             
-                            if text and text.strip():  # 只有当识别到文本时才更新
-                                timestamp = datetime.now().strftime("%H:%M:%S")
-                                formatted_text = f"[{timestamp}] {text}\n"
-                                self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
-                                self.log_info(f"实时转写成功 #{transcription_count}: {text[:50]}{'...' if len(text) > 50 else ''}")
-                                
-                        except Exception as e:
-                            # 处理音频文件时出错，记录日志但继续
-                            if transcription_count % 10 == 1:
-                                self.log_error(f"实时转写处理错误: {str(e)}")
-                        finally:
-                            # 清理临时文件
+                    except Exception as e:
+                        # 处理音频文件时出错，记录日志但继续
+                        if transcription_count % 10 == 1:
+                            self.log_error(f"实时转写处理错误: {str(e)}")
+                    finally:
+                        # 确保临时文件被清理
+                        if temp_file_path and os.path.exists(temp_file_path):
                             try:
-                                os.unlink(temp_file.name)
-                            except:
-                                pass
+                                os.unlink(temp_file_path)
+                            except Exception as e:
+                                if transcription_count % 20 == 1:  # 减少清理错误日志频率
+                                    self.log_warning(f"清理临时文件失败: {str(e)}")
                                 
                 else:
                     time.sleep(0.1)  # 短暂等待
