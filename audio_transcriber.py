@@ -62,6 +62,7 @@ class AudioTranscriber:
         
         # 麦克风控制
         self.microphone_enabled = True  # 麦克风启用状态
+        self.audio_gain = 1.0  # 音频增益倍数，默认为1.0（无增益）
         
         # 语音识别器
         self.recognizer = sr.Recognizer()
@@ -136,13 +137,22 @@ class AudioTranscriber:
         self.microphone_checkbox = ttk.Checkbutton(control_frame, text="麦克风", variable=self.microphone_var, command=self.toggle_microphone)
         self.microphone_checkbox.grid(row=0, column=4, padx=(0, 10))
         
+        # 音频增益控制
+        ttk.Label(control_frame, text="增益:").grid(row=0, column=5, padx=(0, 5), sticky=tk.W)
+        self.gain_var = tk.DoubleVar(value=1.0)
+        self.gain_scale = ttk.Scale(control_frame, from_=0.1, to=5.0, variable=self.gain_var, 
+                                   orient=tk.HORIZONTAL, length=80, command=self.on_gain_change)
+        self.gain_scale.grid(row=0, column=6, padx=(0, 5))
+        self.gain_label = ttk.Label(control_frame, text="1.0x")
+        self.gain_label.grid(row=0, column=7, padx=(0, 10))
+        
         # 录音状态标签
         self.status_label = ttk.Label(control_frame, text="准备就绪")
-        self.status_label.grid(row=0, column=5, sticky=tk.W)
+        self.status_label.grid(row=0, column=8, sticky=tk.W)
         
         # 录音时长标签
         self.duration_label = ttk.Label(control_frame, text="时长: 00:00")
-        self.duration_label.grid(row=0, column=6)
+        self.duration_label.grid(row=0, column=9)
         
         # 文件操作区域
         file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="10")
@@ -364,6 +374,13 @@ class AudioTranscriber:
             self.log_warning("麦克风已禁用，录音将继续但不会接收麦克风音频")
         elif self.recording and self.microphone_enabled:
             self.log_info("麦克风已重新启用，开始接收音频输入")
+    
+    def on_gain_change(self, value):
+        """音频增益变化回调"""
+        self.audio_gain = float(value)
+        self.gain_label.config(text=f"{self.audio_gain:.1f}x")
+        if self.recording:
+            self.log_info(f"音频增益已调整为 {self.audio_gain:.1f}x")
             
     def toggle_recording(self):
         if not self.recording:
@@ -468,6 +485,17 @@ class AudioTranscriber:
                 # 麦克风启用时正常处理音频
                 try:
                     data = self.stream.read(self.chunk)
+                    
+                    # 应用音频增益
+                    if self.audio_gain != 1.0:
+                        # 将字节数据转换为numpy数组
+                        audio_array = np.frombuffer(data, dtype=np.int16)
+                        # 应用增益并限制在int16范围内
+                        audio_array = audio_array.astype(np.float32) * self.audio_gain
+                        audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
+                        # 转换回字节数据
+                        data = audio_array.tobytes()
+                    
                     self.frames.append(data)
                     
                     # 如果启用实时转写，将音频数据添加到缓冲区
