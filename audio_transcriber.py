@@ -144,12 +144,12 @@ class AudioTranscriber:
         self.realtime_checkbox.grid(row=0, column=3, padx=(0, 10))
         
         # 麦克风开关
-        self.microphone_var = tk.BooleanVar(value=True)
+        self.microphone_var = tk.BooleanVar(value=self.microphone_enabled)
         self.microphone_checkbox = ttk.Checkbutton(control_frame, text="麦克风", variable=self.microphone_var, command=self.toggle_microphone)
         self.microphone_checkbox.grid(row=0, column=4, padx=(0, 10))
         
         # 系统音频开关
-        self.system_audio_var = tk.BooleanVar(value=True)
+        self.system_audio_var = tk.BooleanVar(value=self.system_audio_enabled)
         self.system_audio_checkbox = ttk.Checkbutton(control_frame, text="系统音频", variable=self.system_audio_var, command=self.toggle_system_audio)
         self.system_audio_checkbox.grid(row=0, column=5, padx=(0, 10))
         
