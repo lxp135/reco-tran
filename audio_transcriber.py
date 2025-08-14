@@ -539,13 +539,13 @@ class AudioTranscriber:
                 self.realtime_status.config(text="实时转写: 启动中...")
                 # 启动独立的转写线程
                 if self.microphone_enabled:
-                    self.microphone_transcription_thread = threading.Thread(target=self.real_time_transcribe_microphone)
+                    self.microphone_transcription_thread = threading.Thread(target=self.microphone_transcribe)
                     self.microphone_transcription_thread.daemon = True
                     self.microphone_transcription_thread.start()
                     self.log_info(f"麦克风实时转写已启动，使用引擎: {self.engine_type}")
                 
                 if self.system_audio_enabled:
-                    self.system_audio_transcription_thread = threading.Thread(target=self.real_time_transcribe_system_audio)
+                    self.system_audio_transcription_thread = threading.Thread(target=self.system_audio_transcribe)
                     self.system_audio_transcription_thread.daemon = True
                     self.system_audio_transcription_thread.start()
                     self.log_info(f"系统音频实时转写已启动，使用引擎: {self.engine_type}")
