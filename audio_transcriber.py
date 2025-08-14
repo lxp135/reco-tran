@@ -465,52 +465,53 @@ class AudioTranscriber:
             self.last_transcription_time = self.start_time
             
             while self.recording:
-                # 动态检查麦克风状态
-                if not self.microphone_enabled:
-                    # 麦克风被禁用，读取静音数据但不处理
-                    try:
-                        data = self.stream.read(self.chunk)
-                        # 创建静音数据替代实际音频
-                        silent_data = b'\x00' * len(data)
-                        self.frames.append(silent_data)
-                    except:
-                        # 如果读取失败，创建静音数据
-                        silent_data = b'\x00' * (self.chunk * 2)  # 16位音频，每样本2字节
-                        self.frames.append(silent_data)
-                    
-                    # 跳过实时转写处理
-                    time.sleep(0.1)  # 短暂休眠避免CPU占用过高
-                    continue
-                
-                # 麦克风启用时正常处理音频
                 try:
                     data = self.stream.read(self.chunk)
                     
-                    # 应用音频增益
-                    if self.audio_gain != 1.0:
-                        # 将字节数据转换为numpy数组
-                        audio_array = np.frombuffer(data, dtype=np.int16)
-                        # 应用增益并限制在int16范围内
-                        audio_array = audio_array.astype(np.float32) * self.audio_gain
-                        audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
-                        # 转换回字节数据
-                        data = audio_array.tobytes()
-                    
-                    self.frames.append(data)
-                    
-                    # 如果启用实时转写，将音频数据添加到缓冲区
-                    if self.real_time_transcription:
-                        self.audio_buffer.append(data)
+                    # 动态检查麦克风状态
+                    if not self.microphone_enabled:
+                        # 麦克风被禁用时，只对设备内部音源应用增益
+                        if self.audio_gain != 1.0:
+                            # 将字节数据转换为numpy数组
+                            audio_array = np.frombuffer(data, dtype=np.int16)
+                            # 应用增益并限制在int16范围内
+                            audio_array = audio_array.astype(np.float32) * self.audio_gain
+                            audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
+                            # 转换回字节数据
+                            data = audio_array.tobytes()
                         
-                        # 每隔指定时间进行一次转写
-                        current_time = time.time()
-                        if current_time - self.last_transcription_time >= self.buffer_duration:
-                            # 将缓冲区数据放入队列
-                            if self.audio_buffer:
-                                buffer_copy = self.audio_buffer.copy()
-                                self.audio_queue.put(buffer_copy)
-                                self.audio_buffer = []  # 清空缓冲区
-                                self.last_transcription_time = current_time
+                        self.frames.append(data)
+                        
+                        # 如果启用实时转写，将音频数据添加到缓冲区
+                        if self.real_time_transcription:
+                            self.audio_buffer.append(data)
+                            
+                            # 每隔指定时间进行一次转写
+                            current_time = time.time()
+                            if current_time - self.last_transcription_time >= self.buffer_duration:
+                                # 将缓冲区数据放入队列
+                                if self.audio_buffer:
+                                    buffer_copy = self.audio_buffer.copy()
+                                    self.transcription_queue.put(buffer_copy)
+                                    self.audio_buffer.clear()
+                                    self.last_transcription_time = current_time
+                    else:
+                         # 麦克风启用时，不应用增益，保持原始音频
+                         self.frames.append(data)
+                         
+                         # 如果启用实时转写，将音频数据添加到缓冲区
+                         if self.real_time_transcription:
+                             self.audio_buffer.append(data)
+                             
+                             # 每隔指定时间进行一次转写
+                             current_time = time.time()
+                             if current_time - self.last_transcription_time >= self.buffer_duration:
+                                 # 将缓冲区数据放入队列
+                                 if self.audio_buffer:
+                                     buffer_copy = self.audio_buffer.copy()
+                                     self.transcription_queue.put(buffer_copy)
+                                     self.audio_buffer.clear()
+                                     self.last_transcription_time = current_time
                 except Exception as e:
                     self.log_error(f"音频读取错误: {e}")
                     # 发生错误时也添加静音数据保持录音连续性
