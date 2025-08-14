@@ -79,6 +79,7 @@ class AudioTranscriber:
         # 实时转写相关
         self.real_time_transcription = False
         self.audio_queue = queue.Queue()
+        self.transcription_queue = queue.Queue()
         
         # 日志系统
         self.log_queue = queue.Queue()
