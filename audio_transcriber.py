@@ -53,7 +53,12 @@ class AudioTranscriber:
         self.channels = 1
         self.rate = 16000  # 使用16kHz采样率，更适合语音识别
         self.recording = False
-        self.frames = []
+        
+        # 独立的音频数据存储
+        self.microphone_frames = []  # 麦克风音频数据
+        self.system_audio_frames = []  # 系统音频数据
+        self.frames = []  # 合并后的音频数据（保持兼容性）
+        
         self.audio = pyaudio.PyAudio()
         self.stream = None
         self.start_time = None
@@ -90,13 +95,23 @@ class AudioTranscriber:
         self.audio_queue = queue.Queue()
         self.transcription_queue = queue.Queue()
         
+        # 独立的音频缓冲区和转写队列
+        self.microphone_buffer = []  # 麦克风音频缓冲区
+        self.system_audio_buffer = []  # 系统音频缓冲区
+        self.microphone_transcription_queue = queue.Queue()  # 麦克风转写队列
+        self.system_audio_transcription_queue = queue.Queue()  # 系统音频转写队列
+        
         # 日志系统
         self.log_queue = queue.Queue()
         self.setup_logging()
         self.transcription_thread = None
-        self.audio_buffer = []
+        self.microphone_transcription_thread = None  # 麦克风转写线程
+        self.system_audio_transcription_thread = None  # 系统音频转写线程
+        self.audio_buffer = []  # 保持兼容性
         self.buffer_duration = 5  # 每5秒进行一次转写
         self.last_transcription_time = 0
+        self.last_microphone_transcription_time = 0
+        self.last_system_audio_transcription_time = 0
         
         self.setup_ui()
         
@@ -479,13 +494,29 @@ class AudioTranscriber:
             
             # 清空所有音频数据和缓冲区，防止内存累积
             self.frames = []
+            self.microphone_frames = []
+            self.system_audio_frames = []
             self.audio_buffer = []
+            self.microphone_buffer = []
+            self.system_audio_buffer = []
             
-            # 清空转写队列
+            # 清空所有转写队列
             if hasattr(self, 'transcription_queue'):
                 while not self.transcription_queue.empty():
                     try:
                         self.transcription_queue.get_nowait()
+                    except queue.Empty:
+                        break
+            if hasattr(self, 'microphone_transcription_queue'):
+                while not self.microphone_transcription_queue.empty():
+                    try:
+                        self.microphone_transcription_queue.get_nowait()
+                    except queue.Empty:
+                        break
+            if hasattr(self, 'system_audio_transcription_queue'):
+                while not self.system_audio_transcription_queue.empty():
+                    try:
+                        self.system_audio_transcription_queue.get_nowait()
                     except queue.Empty:
                         break
             
@@ -506,11 +537,23 @@ class AudioTranscriber:
             self.real_time_transcription = self.realtime_var.get()
             if self.real_time_transcription:
                 self.realtime_status.config(text="实时转写: 启动中...")
-                # 启动实时转写线程
+                # 启动独立的转写线程
+                if self.microphone_enabled:
+                    self.microphone_transcription_thread = threading.Thread(target=self.real_time_transcribe_microphone)
+                    self.microphone_transcription_thread.daemon = True
+                    self.microphone_transcription_thread.start()
+                    self.log_info(f"麦克风实时转写已启动，使用引擎: {self.engine_type}")
+                
+                if self.system_audio_enabled:
+                    self.system_audio_transcription_thread = threading.Thread(target=self.real_time_transcribe_system_audio)
+                    self.system_audio_transcription_thread.daemon = True
+                    self.system_audio_transcription_thread.start()
+                    self.log_info(f"系统音频实时转写已启动，使用引擎: {self.engine_type}")
+                
+                # 保持原有的转写线程作为兼容
                 self.transcription_thread = threading.Thread(target=self.real_time_transcribe)
                 self.transcription_thread.daemon = True
                 self.transcription_thread.start()
-                self.log_info(f"实时转写已启动，使用引擎: {self.engine_type}")
             else:
                 self.realtime_status.config(text="实时转写: 未启动")
             
@@ -595,7 +638,9 @@ class AudioTranscriber:
             
             while self.recording:
                 try:
-                    # 初始化混合音频数据
+                    # 初始化独立的音频数据
+                    mic_data = None
+                    sys_data = None
                     mixed_data = np.zeros(self.chunk, dtype=np.int16)
                     has_audio = False
                     
@@ -604,20 +649,40 @@ class AudioTranscriber:
                         try:
                             mic_data = self.microphone_stream.read(self.chunk, exception_on_overflow=False)
                             mic_array = np.frombuffer(mic_data, dtype=np.int16)
+                            # 应用增益
+                            if self.audio_gain != 1.0:
+                                mic_array = mic_array.astype(np.float32) * self.audio_gain
+                                mic_array = np.clip(mic_array, -32768, 32767).astype(np.int16)
+                            
+                            # 存储独立的麦克风数据
+                            self.microphone_frames.append(mic_array.tobytes())
                             mixed_data = mixed_data + mic_array
                             has_audio = True
                         except Exception as e:
                             self.log_warning(f"麦克风读取错误: {e}")
+                            # 添加静音数据保持同步
+                            silent_mic_data = b'\x00' * (self.chunk * 2)
+                            self.microphone_frames.append(silent_mic_data)
                     
                     # 读取系统音频数据
                     if self.system_audio_enabled and self.system_audio_stream is not None:
                         try:
                             sys_data = self.system_audio_stream.read(self.chunk, exception_on_overflow=False)
                             sys_array = np.frombuffer(sys_data, dtype=np.int16)
+                            # 应用增益
+                            if self.audio_gain != 1.0:
+                                sys_array = sys_array.astype(np.float32) * self.audio_gain
+                                sys_array = np.clip(sys_array, -32768, 32767).astype(np.int16)
+                            
+                            # 存储独立的系统音频数据
+                            self.system_audio_frames.append(sys_array.tobytes())
                             mixed_data = mixed_data + sys_array
                             has_audio = True
                         except Exception as e:
                             self.log_warning(f"系统音频读取错误: {e}")
+                            # 添加静音数据保持同步
+                            silent_sys_data = b'\x00' * (self.chunk * 2)
+                            self.system_audio_frames.append(silent_sys_data)
                     
                     # 如果使用默认设备
                     if hasattr(self, 'stream') and self.stream is not None:
@@ -625,6 +690,14 @@ class AudioTranscriber:
                             data = self.stream.read(self.chunk, exception_on_overflow=False)
                             if self.microphone_enabled:  # 只有在麦克风启用时才使用默认设备数据
                                 default_array = np.frombuffer(data, dtype=np.int16)
+                                if self.audio_gain != 1.0:
+                                    default_array = default_array.astype(np.float32) * self.audio_gain
+                                    default_array = np.clip(default_array, -32768, 32767).astype(np.int16)
+                                
+                                # 如果没有独立的麦克风流，将默认设备数据作为麦克风数据
+                                if self.microphone_stream is None:
+                                    self.microphone_frames.append(default_array.tobytes())
+                                
                                 mixed_data = mixed_data + default_array
                                 has_audio = True
                         except Exception as e:
@@ -634,33 +707,65 @@ class AudioTranscriber:
                     if has_audio:
                         # 防止溢出，限制在int16范围内
                         mixed_data = np.clip(mixed_data, -32768, 32767)
-                        # 应用增益
-                        if self.audio_gain != 1.0:
-                            mixed_data = mixed_data.astype(np.float32) * self.audio_gain
-                            mixed_data = np.clip(mixed_data, -32768, 32767).astype(np.int16)
-                        
                         final_data = mixed_data.tobytes()
                     else:
                         # 如果没有音频数据，使用静音
                         final_data = b'\x00' * (self.chunk * 2)
+                        # 为独立流也添加静音数据保持同步
+                        if self.microphone_enabled and len(self.microphone_frames) == len(self.system_audio_frames):
+                            self.microphone_frames.append(final_data)
+                        if self.system_audio_enabled and len(self.system_audio_frames) == len(self.microphone_frames):
+                            self.system_audio_frames.append(final_data)
                     
                     self.frames.append(final_data)
                     
-                    # 实时转写处理
+                    # 独立的实时转写处理
+                    current_time = time.time()
+                    
+                    # 麦克风实时转写
+                    if self.real_time_transcription and self.microphone_enabled and mic_data:
+                        self.microphone_buffer.append(mic_data)
+                        
+                        # 限制缓冲区大小
+                        max_buffer_size = self.rate * self.buffer_duration * 2
+                        if len(self.microphone_buffer) * self.chunk * 2 > max_buffer_size:
+                            self.microphone_buffer.pop(0)
+                        
+                        if current_time - self.last_microphone_transcription_time >= self.buffer_duration:
+                            if self.microphone_buffer and self.microphone_transcription_queue.qsize() < 5:
+                                buffer_copy = self.microphone_buffer.copy()
+                                self.microphone_transcription_queue.put(buffer_copy)
+                                self.microphone_buffer.clear()
+                                self.last_microphone_transcription_time = current_time
+                    
+                    # 系统音频实时转写
+                    if self.real_time_transcription and self.system_audio_enabled and sys_data:
+                        self.system_audio_buffer.append(sys_data)
+                        
+                        # 限制缓冲区大小
+                        max_buffer_size = self.rate * self.buffer_duration * 2
+                        if len(self.system_audio_buffer) * self.chunk * 2 > max_buffer_size:
+                            self.system_audio_buffer.pop(0)
+                        
+                        if current_time - self.last_system_audio_transcription_time >= self.buffer_duration:
+                            if self.system_audio_buffer and self.system_audio_transcription_queue.qsize() < 5:
+                                buffer_copy = self.system_audio_buffer.copy()
+                                self.system_audio_transcription_queue.put(buffer_copy)
+                                self.system_audio_buffer.clear()
+                                self.last_system_audio_transcription_time = current_time
+                    
+                    # 保持原有的转写处理（兼容性）
                     if self.real_time_transcription and has_audio:
                         self.audio_buffer.append(final_data)
                         
                         # 限制音频缓冲区大小，防止内存溢出
-                        max_buffer_size = self.rate * self.buffer_duration * 2  # 2字节per sample
+                        max_buffer_size = self.rate * self.buffer_duration * 2
                         if len(self.audio_buffer) * self.chunk * 2 > max_buffer_size:
-                            # 移除最旧的数据
                             self.audio_buffer.pop(0)
                         
-                        current_time = time.time()
                         if current_time - self.last_transcription_time >= self.buffer_duration:
                             if self.audio_buffer:
-                                # 限制转写队列大小，防止堆积
-                                if self.transcription_queue.qsize() < 5:  # 最多保留5个待处理项目
+                                if self.transcription_queue.qsize() < 5:
                                     buffer_copy = self.audio_buffer.copy()
                                     self.transcription_queue.put(buffer_copy)
                                 else:
@@ -760,6 +865,10 @@ class AudioTranscriber:
             # 清空音频缓冲区
             if hasattr(self, 'audio_buffer'):
                 self.audio_buffer.clear()
+            if hasattr(self, 'microphone_buffer'):
+                self.microphone_buffer.clear()
+            if hasattr(self, 'system_audio_buffer'):
+                self.system_audio_buffer.clear()
                 
             # 清空转写队列
             if hasattr(self, 'transcription_queue'):
@@ -768,10 +877,24 @@ class AudioTranscriber:
                         self.transcription_queue.get_nowait()
                     except queue.Empty:
                         break
+            if hasattr(self, 'microphone_transcription_queue'):
+                while not self.microphone_transcription_queue.empty():
+                    try:
+                        self.microphone_transcription_queue.get_nowait()
+                    except queue.Empty:
+                        break
+            if hasattr(self, 'system_audio_transcription_queue'):
+                while not self.system_audio_transcription_queue.empty():
+                    try:
+                        self.system_audio_transcription_queue.get_nowait()
+                    except queue.Empty:
+                        break
                         
             # 记录内存清理信息
             frames_count = len(self.frames) if hasattr(self, 'frames') else 0
-            self.log_info(f"清理内存数据: {frames_count} 个音频帧")
+            mic_frames_count = len(self.microphone_frames) if hasattr(self, 'microphone_frames') else 0
+            sys_frames_count = len(self.system_audio_frames) if hasattr(self, 'system_audio_frames') else 0
+            self.log_info(f"清理内存数据: 混合音频 {frames_count} 帧, 麦克风 {mic_frames_count} 帧, 系统音频 {sys_frames_count} 帧")
             
         except Exception as e:
             self.log_warning(f"清理内存数据时出错: {e}")
@@ -789,6 +912,8 @@ class AudioTranscriber:
         # 保存录音文件
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"recording_{timestamp}.wav"
+        mic_filename = f"microphone_{timestamp}.wav"
+        sys_filename = f"system_audio_{timestamp}.wav"
         
         # 确保audio目录存在
         audio_dir = os.path.join(os.getcwd(), "audio")
@@ -797,17 +922,52 @@ class AudioTranscriber:
             self.log_info(f"创建音频目录: {audio_dir}")
         
         self.current_audio_file = os.path.join(audio_dir, filename)
+        mic_audio_file = os.path.join(audio_dir, mic_filename)
+        sys_audio_file = os.path.join(audio_dir, sys_filename)
+        
+        saved_files = []
         
         try:
-            wf = wave.open(self.current_audio_file, 'wb')
-            wf.setnchannels(self.channels)
-            wf.setsampwidth(self.audio.get_sample_size(self.format))
-            wf.setframerate(self.rate)
-            wf.writeframes(b''.join(self.frames))
-            wf.close()
+            # 保存混合音频文件（兼容性）
+            if hasattr(self, 'frames') and self.frames:
+                wf = wave.open(self.current_audio_file, 'wb')
+                wf.setnchannels(self.channels)
+                wf.setsampwidth(self.audio.get_sample_size(self.format))
+                wf.setframerate(self.rate)
+                wf.writeframes(b''.join(self.frames))
+                wf.close()
+                saved_files.append(("混合音频", filename, self.current_audio_file))
+                self.frames.clear()
             
-            # 保存完成后立即清空frames列表释放内存
-            self.frames.clear()
+            # 保存独立的麦克风音频文件
+            if hasattr(self, 'microphone_frames') and self.microphone_frames:
+                wf_mic = wave.open(mic_audio_file, 'wb')
+                wf_mic.setnchannels(self.channels)
+                wf_mic.setsampwidth(self.audio.get_sample_size(self.format))
+                wf_mic.setframerate(self.rate)
+                wf_mic.writeframes(b''.join(self.microphone_frames))
+                wf_mic.close()
+                saved_files.append(("麦克风", mic_filename, mic_audio_file))
+                self.microphone_frames.clear()
+            
+            # 保存独立的系统音频文件
+            if hasattr(self, 'system_audio_frames') and self.system_audio_frames:
+                wf_sys = wave.open(sys_audio_file, 'wb')
+                wf_sys.setnchannels(self.channels)
+                wf_sys.setsampwidth(self.audio.get_sample_size(self.format))
+                wf_sys.setframerate(self.rate)
+                wf_sys.writeframes(b''.join(self.system_audio_frames))
+                wf_sys.close()
+                saved_files.append(("系统音频", sys_filename, sys_audio_file))
+                self.system_audio_frames.clear()
+            
+            # 如果同时有麦克风和系统音频，创建合并文件
+            if len(saved_files) >= 2 and any("麦克风" in item[0] for item in saved_files) and any("系统音频" in item[0] for item in saved_files):
+                try:
+                    self.merge_audio_files(mic_audio_file, sys_audio_file, self.current_audio_file, timestamp)
+                    saved_files.append(("合并音频", filename, self.current_audio_file))
+                except Exception as e:
+                    self.log_warning(f"合并音频文件失败: {e}")
             
             # 强制垃圾回收释放内存
             gc.collect()
@@ -820,20 +980,67 @@ class AudioTranscriber:
             self.log_info(f"音频帧数据已清空，内存使用: {memory_mb:.1f}MB")
             
             self.transcribe_button.config(state="normal")
-            self.status_bar.config(text=f"录音已保存: {filename}")
             
-            # 计算录音时长和文件大小
-            duration = time.time() - self.start_time if self.start_time else 0
-            file_size = os.path.getsize(self.current_audio_file) / 1024  # KB
-            self.log_info(f"录音文件已保存: {filename}, 时长: {duration:.1f}秒, 大小: {file_size:.1f}KB")
+            # 记录保存的文件信息
+            if saved_files:
+                duration = time.time() - self.start_time if self.start_time else 0
+                self.log_info(f"录音完成，时长: {duration:.1f}秒")
+                
+                for file_type, file_name, file_path in saved_files:
+                    if os.path.exists(file_path):
+                        file_size = os.path.getsize(file_path) / 1024  # KB
+                        self.log_info(f"{file_type}文件已保存: {file_name}, 大小: {file_size:.1f}KB")
+                
+                self.status_bar.config(text=f"录音已保存: {len(saved_files)} 个文件")
+            else:
+                self.status_bar.config(text="录音完成，但没有音频数据")
+                self.log_warning("录音完成，但没有检测到音频数据")
             
         except Exception as e:
             self.log_error(f"保存录音文件失败: {str(e)}")
             messagebox.showerror("错误", f"保存录音文件失败: {str(e)}")
             # 即使保存失败也要清空frames避免内存泄漏
-            self.frames.clear()
+            if hasattr(self, 'frames'):
+                self.frames.clear()
+            if hasattr(self, 'microphone_frames'):
+                self.microphone_frames.clear()
+            if hasattr(self, 'system_audio_frames'):
+                self.system_audio_frames.clear()
             self.log_info("清空音频帧数据以释放内存")
             
+    def merge_audio_files(self, mic_file, sys_file, output_file, timestamp):
+        """合并麦克风和系统音频文件"""
+        try:
+            self.log_info("开始合并音频文件...")
+            
+            # 使用pydub加载音频文件
+            mic_audio = AudioSegment.from_wav(mic_file)
+            sys_audio = AudioSegment.from_wav(sys_file)
+            
+            # 确保两个音频文件长度一致
+            min_length = min(len(mic_audio), len(sys_audio))
+            mic_audio = mic_audio[:min_length]
+            sys_audio = sys_audio[:min_length]
+            
+            # 合并音频（叠加）
+            merged_audio = mic_audio.overlay(sys_audio)
+            
+            # 导出合并后的音频
+            merged_audio.export(output_file, format="wav")
+            
+            self.log_info(f"音频合并完成: {os.path.basename(output_file)}")
+            
+        except Exception as e:
+            self.log_error(f"音频合并失败: {e}")
+            # 如果合并失败，尝试简单复制麦克风文件作为备选
+            try:
+                import shutil
+                shutil.copy2(mic_file, output_file)
+                self.log_info(f"合并失败，已复制麦克风文件作为主文件: {os.path.basename(output_file)}")
+            except Exception as copy_error:
+                self.log_error(f"复制备选文件也失败: {copy_error}")
+                raise e
+    
     def open_audio_file(self):
         # 设置默认目录为audio子目录
         audio_dir = os.path.join(os.getcwd(), "audio")
@@ -1126,6 +1333,168 @@ class AudioTranscriber:
                 
         self.root.after(0, lambda: self.realtime_status.config(text="实时转写: 已停止"))
         self.log_info(f"实时转写线程结束，共处理 {transcription_count} 个音频片段")
+        
+    def microphone_transcribe(self):
+        """麦克风音频实时转写线程函数"""
+        self.log_info(f"麦克风转写线程启动，使用引擎: {self.engine_type}")
+        
+        transcription_count = 0
+        
+        while self.real_time_transcription and self.recording:
+            try:
+                # 从队列中获取音频数据
+                if not self.microphone_transcription_queue.empty():
+                    audio_data = self.microphone_transcription_queue.get(timeout=1)
+                    transcription_count += 1
+                    
+                    # 将音频数据转换为可识别的格式
+                    audio_bytes = b''.join(audio_data)
+                    
+                    # 创建临时WAV文件
+                    temp_file_path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix="_mic.wav", delete=False) as temp_file:
+                            temp_file_path = temp_file.name
+                            wf = wave.open(temp_file_path, 'wb')
+                            wf.setnchannels(self.channels)
+                            wf.setsampwidth(self.audio.get_sample_size(self.format))
+                            wf.setframerate(self.rate)
+                            wf.writeframes(audio_bytes)
+                            wf.close()
+                        
+                        # 进行语音识别
+                        text = ""
+                        if self.engine_type == "whisper":
+                            try:
+                                text = self.transcribe_with_whisper(temp_file_path)
+                            except Exception as e:
+                                if transcription_count % 10 == 1:
+                                    self.log_warning(f"麦克风Whisper转写失败: {str(e)}")
+                        else:
+                            # 使用Google引擎
+                            try:
+                                with sr.AudioFile(temp_file_path) as source:
+                                    audio_for_recognition = self.recognizer.record(source)
+                                    
+                                try:
+                                    text = self.recognizer.recognize_google(audio_for_recognition, language='zh-CN')
+                                except sr.UnknownValueError:
+                                    pass
+                                except sr.RequestError as e:
+                                    if transcription_count % 10 == 1:
+                                        self.log_warning(f"麦克风Google转写网络错误: {str(e)}")
+                            except Exception as e:
+                                if transcription_count % 10 == 1:
+                                    self.log_error(f"麦克风音频文件处理错误: {str(e)}")
+                        
+                        if text and text.strip():
+                            timestamp = datetime.now().strftime("%H:%M:%S")
+                            formatted_text = f"[{timestamp}][麦克风] {text}\n"
+                            self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
+                            self.log_info(f"麦克风转写成功 #{transcription_count}: {text[:50]}{'...' if len(text) > 50 else ''}")
+                            
+                    except Exception as e:
+                        if transcription_count % 10 == 1:
+                            self.log_error(f"麦克风转写处理错误: {str(e)}")
+                    finally:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            try:
+                                os.unlink(temp_file_path)
+                            except Exception as e:
+                                if transcription_count % 20 == 1:
+                                    self.log_warning(f"清理麦克风临时文件失败: {str(e)}")
+                                
+                else:
+                    time.sleep(0.1)
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                self.log_error(f"麦克风转写线程异常: {str(e)}")
+                continue
+                
+        self.log_info(f"麦克风转写线程结束，共处理 {transcription_count} 个音频片段")
+    
+    def system_audio_transcribe(self):
+        """系统音频实时转写线程函数"""
+        self.log_info(f"系统音频转写线程启动，使用引擎: {self.engine_type}")
+        
+        transcription_count = 0
+        
+        while self.real_time_transcription and self.recording:
+            try:
+                # 从队列中获取音频数据
+                if not self.system_audio_transcription_queue.empty():
+                    audio_data = self.system_audio_transcription_queue.get(timeout=1)
+                    transcription_count += 1
+                    
+                    # 将音频数据转换为可识别的格式
+                    audio_bytes = b''.join(audio_data)
+                    
+                    # 创建临时WAV文件
+                    temp_file_path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix="_sys.wav", delete=False) as temp_file:
+                            temp_file_path = temp_file.name
+                            wf = wave.open(temp_file_path, 'wb')
+                            wf.setnchannels(self.channels)
+                            wf.setsampwidth(self.audio.get_sample_size(self.format))
+                            wf.setframerate(self.rate)
+                            wf.writeframes(audio_bytes)
+                            wf.close()
+                        
+                        # 进行语音识别
+                        text = ""
+                        if self.engine_type == "whisper":
+                            try:
+                                text = self.transcribe_with_whisper(temp_file_path)
+                            except Exception as e:
+                                if transcription_count % 10 == 1:
+                                    self.log_warning(f"系统音频Whisper转写失败: {str(e)}")
+                        else:
+                            # 使用Google引擎
+                            try:
+                                with sr.AudioFile(temp_file_path) as source:
+                                    audio_for_recognition = self.recognizer.record(source)
+                                    
+                                try:
+                                    text = self.recognizer.recognize_google(audio_for_recognition, language='zh-CN')
+                                except sr.UnknownValueError:
+                                    pass
+                                except sr.RequestError as e:
+                                    if transcription_count % 10 == 1:
+                                        self.log_warning(f"系统音频Google转写网络错误: {str(e)}")
+                            except Exception as e:
+                                if transcription_count % 10 == 1:
+                                    self.log_error(f"系统音频文件处理错误: {str(e)}")
+                        
+                        if text and text.strip():
+                            timestamp = datetime.now().strftime("%H:%M:%S")
+                            formatted_text = f"[{timestamp}][系统音频] {text}\n"
+                            self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
+                            self.log_info(f"系统音频转写成功 #{transcription_count}: {text[:50]}{'...' if len(text) > 50 else ''}")
+                            
+                    except Exception as e:
+                        if transcription_count % 10 == 1:
+                            self.log_error(f"系统音频转写处理错误: {str(e)}")
+                    finally:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            try:
+                                os.unlink(temp_file_path)
+                            except Exception as e:
+                                if transcription_count % 20 == 1:
+                                    self.log_warning(f"清理系统音频临时文件失败: {str(e)}")
+                                
+                else:
+                    time.sleep(0.1)
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                self.log_error(f"系统音频转写线程异常: {str(e)}")
+                continue
+                
+        self.log_info(f"系统音频转写线程结束，共处理 {transcription_count} 个音频片段")
         
     def append_realtime_text(self, text):
         """向文本区域追加实时转写结果"""
