@@ -58,18 +58,7 @@ class AudioTranscriber:
         
         # 音频设备相关
         self.audio_devices = []
-        self.microphone_devices = []  # 麦克风设备列表
-        self.device_audio_devices = []  # 设备音频列表
         self.selected_device_index = None
-        self.device_status = {}  # 存储每个设备的状态
-        self.device_enabled = {}  # 存储每个设备的启用状态
-        self.device_monitors = {}  # 存储设备监控线程
-        self.monitoring_active = False
-        
-        # 新的音频源控制
-        self.microphone_enabled = True  # 麦克风启用状态
-        self.device_audio_enabled = True  # 设备音频启用状态
-        self.device_threads = {}  # 设备监控线程字典
         
         # 语音识别器
         self.recognizer = sr.Recognizer()
@@ -96,9 +85,6 @@ class AudioTranscriber:
         self.last_transcription_time = 0
         
         self.setup_ui()
-        
-        # 初始化音频设备
-        self.initialize_audio_devices()
         
         # 启动日志更新线程
         self.start_log_updater()
@@ -203,100 +189,7 @@ class AudioTranscriber:
         self.log_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_area.config(state=tk.DISABLED)  # 设置为只读
         
-        # 音频源控制区域（右列）
-        audio_source_frame = ttk.LabelFrame(main_frame, text="音频源控制", padding="10")
-        audio_source_frame.grid(row=3, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 0))
-        audio_source_frame.columnconfigure(0, weight=1)
-        audio_source_frame.rowconfigure(2, weight=1)
-        
-        # 麦克风输入控制
-        mic_frame = ttk.LabelFrame(audio_source_frame, text="麦克风输入", padding="10")
-        mic_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        mic_frame.columnconfigure(1, weight=1)
-        
-        # 麦克风开关
-        self.mic_enabled_var = tk.BooleanVar(value=True)
-        self.mic_checkbox = ttk.Checkbutton(
-            mic_frame, 
-            text="启用麦克风", 
-            variable=self.mic_enabled_var,
-            command=lambda: self.toggle_microphone_enabled(self.mic_enabled_var.get())
-        )
-        self.mic_checkbox.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
-        
-        # 麦克风状态指示
-        self.mic_status_frame = ttk.Frame(mic_frame)
-        self.mic_status_frame.grid(row=0, column=1, sticky=tk.E, pady=(0, 5))
-        
-        self.mic_status_canvas = tk.Canvas(self.mic_status_frame, width=12, height=12)
-        self.mic_status_canvas.grid(row=0, column=0, padx=(0, 5))
-        self.mic_status_canvas.create_oval(2, 2, 10, 10, fill='gray', outline='black')
-        
-        self.mic_status_label = ttk.Label(self.mic_status_frame, text="音量: 0%")
-        self.mic_status_label.grid(row=0, column=1)
-        
-        # 麦克风设备选择
-        ttk.Label(mic_frame, text="设备:").grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
-        self.mic_device_var = tk.StringVar()
-        self.mic_device_combo = ttk.Combobox(
-            mic_frame, 
-            textvariable=self.mic_device_var, 
-            state="readonly",
-            width=25
-        )
-        self.mic_device_combo.grid(row=1, column=1, sticky=(tk.W, tk.E), pady=(5, 0))
-        
-        # 设备音频控制
-        device_frame = ttk.LabelFrame(audio_source_frame, text="设备音频", padding="10")
-        device_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        device_frame.columnconfigure(1, weight=1)
-        
-        # 设备音频开关
-        self.device_audio_enabled_var = tk.BooleanVar(value=True)
-        self.device_audio_checkbox = ttk.Checkbutton(
-            device_frame, 
-            text="启用设备音频", 
-            variable=self.device_audio_enabled_var,
-            command=lambda: self.toggle_device_audio_enabled(self.device_audio_enabled_var.get())
-        )
-        self.device_audio_checkbox.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
-        
-        # 设备音频状态指示
-        self.device_status_frame = ttk.Frame(device_frame)
-        self.device_status_frame.grid(row=0, column=1, sticky=tk.E, pady=(0, 5))
-        
-        self.device_status_canvas = tk.Canvas(self.device_status_frame, width=12, height=12)
-        self.device_status_canvas.grid(row=0, column=0, padx=(0, 5))
-        self.device_status_canvas.create_oval(2, 2, 10, 10, fill='gray', outline='black')
-        
-        self.device_status_label = ttk.Label(self.device_status_frame, text="音量: 0%")
-        self.device_status_label.grid(row=0, column=1)
-        
-        # 设备音频设备选择
-        ttk.Label(device_frame, text="设备:").grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
-        self.device_audio_var = tk.StringVar()
-        self.device_audio_combo = ttk.Combobox(
-            device_frame, 
-            textvariable=self.device_audio_var, 
-            state="readonly",
-            width=25
-        )
-        self.device_audio_combo.grid(row=1, column=1, sticky=(tk.W, tk.E), pady=(5, 0))
-        
-        # 设备详情显示区域
-        details_frame = ttk.LabelFrame(audio_source_frame, text="设备详情", padding="10")
-        details_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        details_frame.columnconfigure(0, weight=1)
-        details_frame.rowconfigure(0, weight=1)
-        
-        self.device_details_text = scrolledtext.ScrolledText(
-            details_frame, 
-            wrap=tk.WORD, 
-            height=8, 
-            font=("Consolas", 9),
-            state=tk.DISABLED
-        )
-        self.device_details_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
         
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
@@ -347,428 +240,68 @@ class AudioTranscriber:
     
     def initialize_audio_devices(self):
         """初始化音频设备列表"""
-        try:
-            self.microphone_devices = []
-            self.device_audio_devices = []
-            device_count = self.audio.get_device_count()
-            
-            self.logger.info(f"开始扫描音频设备，共检测到 {device_count} 个设备")
-            self.logger.info("=== 设备详细信息 ===")
-            
-            for i in range(device_count):
-                try:
-                    device_info = self.audio.get_device_info_by_index(i)
-                    device_name = device_info['name']
-                    max_input = device_info['maxInputChannels']
-                    max_output = device_info['maxOutputChannels']
-                    sample_rate = int(device_info['defaultSampleRate'])
-                    
-                    # 记录所有设备信息
-                    self.logger.info(f"设备 {i}: {device_name}")
-                    self.logger.info(f"  - 输入通道: {max_input}, 输出通道: {max_output}")
-                    self.logger.info(f"  - 采样率: {sample_rate}Hz")
-                    
-                    # 只处理输入设备
-                    if max_input > 0:
-                        device_name_lower = device_name.lower()
-                        
-                        # 麦克风设备关键词
-                        mic_keywords = ['麦克风', 'microphone', 'mic', 'micin', 'front panel']
-                        # 设备音频关键词（扬声器、耳机等）
-                        device_keywords = ['扬声器', 'speaker', 'headphone', 'headset', '立体声混音', 'stereo mix', 'what u hear', 'loopback']
-                        # 虚拟设备关键词（需要排除）
-                        virtual_keywords = ['sound mapper', '声音捕获', 'virtual', '虚拟', 'driver', '驱动', 'mapper']
-                        
-                        has_mic = any(keyword in device_name_lower for keyword in mic_keywords)
-                        has_device_audio = any(keyword in device_name_lower for keyword in device_keywords)
-                        has_virtual = any(keyword in device_name_lower for keyword in virtual_keywords)
-                        
-                        # 排除虚拟设备
-                        if has_virtual:
-                            self.logger.info(f"  - 设备类型: 虚拟设备，已跳过")
-                            continue
-                        
-                        device_data = {
-                            'index': i,
-                            'name': device_name,
-                            'channels': max_input,
-                            'sample_rate': sample_rate,
-                            'is_default': i == self.audio.get_default_input_device_info()['index']
-                        }
-                        
-                        # 分类设备
-                        if has_mic:
-                            self.microphone_devices.append(device_data)
-                            self.logger.info(f"  - 设备类型: 麦克风设备")
-                        elif has_device_audio:
-                            self.device_audio_devices.append(device_data)
-                            self.logger.info(f"  - 设备类型: 设备音频")
-                        else:
-                            # 默认归类为麦克风设备
-                            self.microphone_devices.append(device_data)
-                            self.logger.info(f"  - 设备类型: 未知设备，归类为麦克风")
-                        
-                        # 初始化设备状态
-                        self.device_status[i] = {'active': False, 'level': 0}
-                        
-                    else:
-                        self.logger.info(f"  - 输入设备: 否, 状态: 已跳过（无输入通道）")
-                    
-                    self.logger.info("")
-                    
-                except Exception as e:
-                    self.logger.warning(f"获取设备 {i} 信息失败: {e}")
-            
-            self.logger.info("=== 扫描结果汇总 ===")
-            self.logger.info(f"总设备数: {device_count}")
-            self.logger.info(f"麦克风设备数: {len(self.microphone_devices)}")
-            self.logger.info(f"设备音频数: {len(self.device_audio_devices)}")
-            
-            if self.microphone_devices:
-                self.logger.info("麦克风设备列表:")
-                for device in self.microphone_devices:
-                    default_mark = " (默认)" if device['is_default'] else ""
-                    self.logger.info(f"  - {device['name']}{default_mark}")
-            
-            if self.device_audio_devices:
-                self.logger.info("设备音频列表:")
-                for device in self.device_audio_devices:
-                    default_mark = " (默认)" if device['is_default'] else ""
-                    self.logger.info(f"  - {device['name']}{default_mark}")
-            
-            if not self.microphone_devices and not self.device_audio_devices:
-                self.logger.warning("未发现有效的音频输入设备")
-            
-            self.update_devices_display()
-            
-            # 默认启动监控
-            if self.microphone_devices or self.device_audio_devices:
-                self.start_device_monitoring()
-            
-        except Exception as e:
-            self.logger.error(f"初始化音频设备失败: {e}")
+        # 音频源控制功能已移除
+        pass
     
     def refresh_audio_devices(self):
         """刷新音频设备列表"""
-        self.logger.info("刷新音频设备列表...")
-        self.initialize_audio_devices()
+        # 音频源控制功能已移除
+        pass
     
     def update_devices_display(self):
         """更新设备显示界面"""
-        # 更新麦克风设备下拉列表
-        mic_values = []
-        if self.microphone_devices:
-            for device in self.microphone_devices:
-                display_name = device['name'][:40] + '...' if len(device['name']) > 40 else device['name']
-                if device['is_default']:
-                    display_name += " (默认)"
-                mic_values.append(display_name)
-            self.mic_device_combo['values'] = mic_values
-            if mic_values:
-                self.mic_device_combo.current(0)  # 选择第一个设备
-        else:
-            self.mic_device_combo['values'] = ["未发现麦克风设备"]
-            self.mic_device_combo.current(0)
-        
-        # 更新设备音频下拉列表
-        device_values = []
-        if self.device_audio_devices:
-            for device in self.device_audio_devices:
-                display_name = device['name'][:40] + '...' if len(device['name']) > 40 else device['name']
-                if device['is_default']:
-                    display_name += " (默认)"
-                device_values.append(display_name)
-            self.device_audio_combo['values'] = device_values
-            if device_values:
-                self.device_audio_combo.current(0)  # 选择第一个设备
-        else:
-            self.device_audio_combo['values'] = ["未发现设备音频"]
-            self.device_audio_combo.current(0)
-        
-        # 更新设备详情显示
-        self.update_device_details()
+        # 音频源控制功能已移除
+        pass
     
     def toggle_device_enabled(self, device_index, enabled):
         """切换设备启用状态"""
-        self.device_enabled[device_index] = enabled
-        device_name = next((d['name'] for d in self.audio_devices if d['index'] == device_index), f"设备{device_index}")
-        status = "启用" if enabled else "禁用"
-        self.logger.info(f"{status}音频设备: {device_name}")
+        # 音频源控制功能已移除
+        pass
     
     def toggle_microphone_enabled(self, enabled):
         """切换麦克风启用状态"""
-        self.microphone_enabled = enabled
-        logging.info(f"麦克风 {'启用' if enabled else '禁用'}")
-        
-        # 更新状态指示
-        self.update_microphone_status()
-        
-        # 如果禁用麦克风，停止相关设备的监控
-        if not enabled:
-            # 如果正在录音且当前使用的是麦克风设备，强制停止录音
-            if self.recording:
-                selected_device = self.get_selected_device()
-                if selected_device is None:  # 没有可用设备了，停止录音
-                    self.log_warning("麦克风已禁用，强制停止录音")
-                    self.stop_recording()
-            
-            for device in self.microphone_devices:
-                device_index = device['index']
-                if device_index in self.device_threads:
-                    self.device_threads[device_index]['stop_event'].set()
-                    del self.device_threads[device_index]
-        # 如果启用麦克风，开始监控选中的设备
-        elif enabled and self.microphone_devices:
-            selected_index = self.mic_device_combo.current()
-            if 0 <= selected_index < len(self.microphone_devices):
-                device = self.microphone_devices[selected_index]
-                # 为选中的麦克风设备创建监控线程
-                monitor_thread = threading.Thread(
-                    target=self.monitor_device,
-                    args=(device['index'],),
-                    daemon=True
-                )
-                monitor_thread.start()
-                self.device_monitors[device['index']] = monitor_thread
+        # 音频源控制功能已移除
+        pass
     
     def toggle_device_audio_enabled(self, enabled):
         """切换设备音频启用状态"""
-        self.device_audio_enabled = enabled
-        logging.info(f"设备音频 {'启用' if enabled else '禁用'}")
-        
-        # 更新状态指示
-        self.update_device_audio_status()
-        
-        # 如果禁用设备音频，停止相关设备的监控
-        if not enabled:
-            # 如果正在录音且当前使用的是设备音频，强制停止录音
-            if self.recording:
-                selected_device = self.get_selected_device()
-                if selected_device is None:  # 没有可用设备了，停止录音
-                    self.log_warning("设备音频已禁用，强制停止录音")
-                    self.stop_recording()
-            
-            for device in self.device_audio_devices:
-                device_index = device['index']
-                if device_index in self.device_threads:
-                    self.device_threads[device_index]['stop_event'].set()
-                    del self.device_threads[device_index]
-        # 如果启用设备音频，开始监控选中的设备
-        elif enabled and self.device_audio_devices:
-            selected_index = self.device_audio_combo.current()
-            if 0 <= selected_index < len(self.device_audio_devices):
-                device = self.device_audio_devices[selected_index]
-                # 为选中的设备音频设备创建监控线程
-                monitor_thread = threading.Thread(
-                    target=self.monitor_device,
-                    args=(device['index'],),
-                    daemon=True
-                )
-                monitor_thread.start()
-                self.device_monitors[device['index']] = monitor_thread
+        # 音频源控制功能已移除
+        pass
     
     def update_microphone_status(self):
         """更新麦克风状态指示"""
-        if hasattr(self, 'mic_status_canvas') and hasattr(self, 'mic_status_label'):
-            # 计算麦克风设备的平均音量
-            total_level = 0
-            active_count = 0
-            
-            for device in self.microphone_devices:
-                device_index = device['index']
-                if self.microphone_enabled and device_index in self.device_status:
-                    status = self.device_status[device_index]
-                    if status['active']:
-                        total_level += status['level']
-                        active_count += 1
-            
-            avg_level = total_level / active_count if active_count > 0 else 0
-            is_active = self.microphone_enabled and active_count > 0
-            
-            # 更新指示灯颜色
-            self.mic_status_canvas.delete("all")
-            color = 'green' if is_active else 'gray'
-            self.mic_status_canvas.create_oval(2, 2, 18, 18, fill=color, outline='black')
-            
-            # 更新音量显示
-            self.mic_status_label.config(text=f"音量: {avg_level:.0f}%")
+        # 音频源控制功能已移除
+        pass
     
     def update_device_audio_status(self):
         """更新设备音频状态指示"""
-        if hasattr(self, 'device_status_canvas') and hasattr(self, 'device_status_label'):
-            # 计算设备音频的平均音量
-            total_level = 0
-            active_count = 0
-            
-            for device in self.device_audio_devices:
-                device_index = device['index']
-                if self.device_audio_enabled and device_index in self.device_status:
-                    status = self.device_status[device_index]
-                    if status['active']:
-                        total_level += status['level']
-                        active_count += 1
-            
-            avg_level = total_level / active_count if active_count > 0 else 0
-            is_active = self.device_audio_enabled and active_count > 0
-            
-            # 更新指示灯颜色
-            self.device_status_canvas.delete("all")
-            color = 'green' if is_active else 'gray'
-            self.device_status_canvas.create_oval(2, 2, 18, 18, fill=color, outline='black')
-            
-            # 更新音量显示
-            self.device_status_label.config(text=f"音量: {avg_level:.0f}%")
+        # 音频源控制功能已移除
+        pass
     
     def update_device_details(self):
         """更新设备详情显示"""
-        # 清空现有显示
-        for widget in self.devices_frame.winfo_children():
-            widget.destroy()
-        
-        # 显示麦克风设备详情
-        if self.microphone_devices:
-            mic_frame = ttk.LabelFrame(self.devices_frame, text="麦克风设备详情", padding="10")
-            mic_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-            
-            for i, device in enumerate(self.microphone_devices):
-                device_name = device['name'][:50] + '...' if len(device['name']) > 50 else device['name']
-                default_text = " (默认)" if device['is_default'] else ""
-                
-                device_label = ttk.Label(
-                    mic_frame,
-                    text=f"{device_name}{default_text}",
-                    font=('TkDefaultFont', 9, 'bold')
-                )
-                device_label.grid(row=i*2, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
-                
-                info_label = ttk.Label(
-                    mic_frame,
-                    text=f"通道: {device['channels']} | 采样率: {device['sample_rate']}Hz | 索引: {device['index']}",
-                    font=('TkDefaultFont', 8)
-                )
-                info_label.grid(row=i*2+1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
-        
-        # 显示设备音频详情
-        if self.device_audio_devices:
-            device_frame = ttk.LabelFrame(self.devices_frame, text="设备音频详情", padding="10")
-            device_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
-            
-            for i, device in enumerate(self.device_audio_devices):
-                device_name = device['name'][:50] + '...' if len(device['name']) > 50 else device['name']
-                default_text = " (默认)" if device['is_default'] else ""
-                
-                device_label = ttk.Label(
-                    device_frame,
-                    text=f"{device_name}{default_text}",
-                    font=('TkDefaultFont', 9, 'bold')
-                )
-                device_label.grid(row=i*2, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
-                
-                info_label = ttk.Label(
-                    device_frame,
-                    text=f"通道: {device['channels']} | 采样率: {device['sample_rate']}Hz | 索引: {device['index']}",
-                    font=('TkDefaultFont', 8)
-                )
-                info_label.grid(row=i*2+1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        # 音频源控制功能已移除
+        pass
     
     def start_device_monitoring(self):
         """开始监控音频设备"""
-        if self.monitoring_active:
-            return
-        
-        self.monitoring_active = True
-        self.logger.info("开始监控音频设备状态...")
-        
-        # 为每个启用的设备创建监控线程
-        for device in self.audio_devices:
-            if self.device_enabled.get(device['index'], True):
-                monitor_thread = threading.Thread(
-                    target=self.monitor_device,
-                    args=(device['index'],),
-                    daemon=True
-                )
-                monitor_thread.start()
-                self.device_monitors[device['index']] = monitor_thread
+        # 音频源控制功能已移除
+        pass
 
     def stop_device_monitoring(self):
         """停止监控音频设备"""
-        self.monitoring_active = False
-        self.logger.info("停止监控音频设备状态")
-        
-        # 重置所有设备状态
-        for device_index in self.device_status:
-            self.device_status[device_index] = {'active': False, 'level': 0}
-            self.update_device_status_display(device_index)
+        # 音频源控制功能已移除
+        pass
     
     def monitor_device(self, device_index):
         """监控单个设备的音频输入"""
-        try:
-            # 创建音频流用于监控
-            stream = self.audio.open(
-                format=self.format,
-                channels=1,
-                rate=self.rate,
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=self.chunk
-            )
-            
-            while self.monitoring_active and self.device_enabled.get(device_index, True):
-                try:
-                    data = stream.read(self.chunk, exception_on_overflow=False)
-                    
-                    # 计算音频级别
-                    audio_data = np.frombuffer(data, dtype=np.int16)
-                    level = np.sqrt(np.mean(audio_data**2))
-                    level_percent = min(100, (level / 3000) * 100)  # 归一化到0-100%
-                    
-                    # 更新设备状态
-                    is_active = level_percent > 1  # 阈值可调整
-                    self.device_status[device_index] = {
-                        'active': is_active,
-                        'level': level_percent
-                    }
-                    
-                    # 在主线程中更新UI
-                    self.root.after(0, self.update_device_status_display, device_index)
-                    
-                    time.sleep(0.1)  # 100ms更新间隔
-                    
-                except Exception as e:
-                    if self.monitoring_active:
-                        self.logger.warning(f"设备 {device_index} 监控错误: {e}")
-                    break
-            
-            stream.stop_stream()
-            stream.close()
-            
-        except Exception as e:
-            self.logger.error(f"无法监控设备 {device_index}: {e}")
+        # 音频源控制功能已移除
+        pass
     
     def update_device_status_display(self, device_index):
         """更新设备状态显示"""
-        try:
-            # 更新旧版本的设备状态显示（兼容性）
-            status_canvas = getattr(self, f'device_status_canvas_{device_index}', None)
-            level_label = getattr(self, f'device_level_label_{device_index}', None)
-            
-            if status_canvas and level_label:
-                device_status = self.device_status.get(device_index, {'active': False, 'level': 0})
-                
-                # 更新状态指示灯
-                status_canvas.delete("all")
-                color = 'green' if device_status['active'] else 'gray'
-                status_canvas.create_oval(2, 2, 10, 10, fill=color, outline='black')
-                
-                # 更新音量级别
-                level_label.config(text=f"音量: {device_status['level']:.0f}%")
-            
-            # 更新新版本的麦克风和设备音频状态
-            self.update_microphone_status()
-            self.update_device_audio_status()
-                
-        except Exception as e:
-            pass  # 忽略UI更新错误
+        # 音频源控制功能已移除
+        pass
     
     def append_log(self, log_record):
         """在日志区域添加日志消息"""
@@ -914,42 +447,19 @@ class AudioTranscriber:
     
     def get_selected_device(self):
         """获取当前选中的音频设备"""
-        selected_devices = []
-        
-        # 根据麦克风启用状态添加麦克风设备
-        if self.microphone_enabled and hasattr(self, 'mic_device_combo'):
-            selected_index = self.mic_device_combo.current()
-            if 0 <= selected_index < len(self.microphone_devices):
-                selected_devices.append(self.microphone_devices[selected_index])
-        
-        # 根据设备音频启用状态添加设备音频
-        if self.device_audio_enabled and hasattr(self, 'device_audio_combo'):
-            selected_index = self.device_audio_combo.current()
-            if 0 <= selected_index < len(self.device_audio_devices):
-                selected_devices.append(self.device_audio_devices[selected_index])
-        
-        # 如果有选中的设备，返回第一个（优先麦克风）
-        if selected_devices:
-            return selected_devices[0]
-        
-        # 如果麦克风和设备音频都被禁用，返回 None
-        if hasattr(self, 'mic_device_combo') and hasattr(self, 'device_audio_combo'):
-            if not self.microphone_enabled and not self.device_audio_enabled:
-                return None
-        
-        # 兼容旧逻辑：如果没有新的控制界面，使用原有逻辑
-        if hasattr(self, 'audio_devices'):
-            # 如果有默认设备且启用，使用默认设备
-            for device in self.audio_devices:
-                if device['is_default'] and self.device_enabled.get(device['index'], True):
-                    return device
-            
-            # 否则使用第一个启用的设备
-            for device in self.audio_devices:
-                if self.device_enabled.get(device['index'], True):
-                    return device
-        
-        return None
+        # 音频源控制功能已移除，使用系统默认音频输入设备
+        try:
+            default_device_info = self.audio.get_default_input_device_info()
+            return {
+                'index': default_device_info['index'],
+                'name': default_device_info['name'],
+                'channels': default_device_info['maxInputChannels'],
+                'sample_rate': int(default_device_info['defaultSampleRate']),
+                'is_default': True
+            }
+        except Exception as e:
+            self.log_error(f"获取默认音频设备失败: {e}")
+            return None
             
     def update_timer(self):
         while self.recording:
