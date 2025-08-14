@@ -813,8 +813,8 @@ class AudioTranscriber:
         while self.real_time_transcription and self.recording:
             try:
                 # 从队列中获取音频数据
-                if not self.audio_queue.empty():
-                    audio_data = self.audio_queue.get(timeout=1)
+                if not self.transcription_queue.empty():
+                    audio_data = self.transcription_queue.get(timeout=1)
                     transcription_count += 1
                     
                     # 将音频数据转换为可识别的格式
