@@ -328,6 +328,9 @@ class AudioTranscriber:
             # 格式化日志消息
             formatted_message = self.log_handler.format(log_record)
             
+            # 同时在终端中打印日志
+            print(formatted_message)
+            
             # 更新日志显示区域
             self.log_area.config(state=tk.NORMAL)
             self.log_area.insert(tk.END, formatted_message + "\n")
