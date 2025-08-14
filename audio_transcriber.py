@@ -494,11 +494,8 @@ class AudioTranscriber:
     
     def get_selected_device(self):
         """获取当前选中的音频设备"""
-        # 如果麦克风被禁用，返回None
-        if not self.microphone_enabled:
-            return None
-            
-        # 使用系统默认音频输入设备
+        # 始终返回系统默认音频输入设备信息
+        # 麦克风控制逻辑在record_audio方法中处理
         try:
             default_device_info = self.audio.get_default_input_device_info()
             return {
