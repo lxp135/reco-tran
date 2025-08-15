@@ -3,7 +3,7 @@ import time
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
-import pyaudio
+import pyaudiowpatch as pyaudio
 import wave
 import speech_recognition as sr
 from datetime import datetime
@@ -73,6 +73,13 @@ class AudioTranscriber:
         self.microphone_enabled = True  # 麦克风启用状态
         self.system_audio_enabled = True  # 系统音频启用状态
         self.audio_gain = 1.0  # 音频增益倍数，默认为1.0（无增益）
+        
+        # 音频泄漏检测相关变量
+        self.mic_audio_samples = []
+        self.leakage_detection_interval = 50  # 每50个音频块检测一次
+        self.audio_block_count = 0
+        self.last_leakage_warning_time = 0
+        self.leakage_warning_interval = 30  # 30秒内最多警告一次
         
         # 音频流
         self.microphone_stream = None
@@ -290,15 +297,42 @@ class AudioTranscriber:
         self.log_thread.start()
     
     def initialize_audio_devices(self):
-        """初始化音频设备列表"""
+        """初始化音频设备列表，支持WASAPI loopback"""
         try:
             device_count = self.audio.get_device_count()
             self.audio_devices = []
             
+            # 打印所有音频设备信息
+            self.log_info("📋 扫描所有音频设备:")
+            input_devices = []
+            loopback_devices = []
+            
+            # 扫描常规输入设备
             for i in range(device_count):
                 try:
                     device_info = self.audio.get_device_info_by_index(i)
+                    # 显示所有设备的基本信息
+                    device_type = "输入" if device_info['maxInputChannels'] > 0 else "输出"
+                    if device_info['maxInputChannels'] > 0 and device_info['maxOutputChannels'] > 0:
+                        device_type = "输入/输出"
+                    
+                    self.log_info(f"   设备 {i}: {device_info['name']} ({device_type})")
+                    self.log_info(f"      输入通道: {device_info['maxInputChannels']}, 输出通道: {device_info['maxOutputChannels']}")
+                    self.log_info(f"      默认采样率: {int(device_info['defaultSampleRate'])}Hz")
+                    
                     if device_info['maxInputChannels'] > 0:  # 只考虑输入设备
+                        # 检查设备是否可用
+                        device_available = self.test_device_availability(i, device_info['name'])
+                        status = "✅ 可用" if device_available else "❌ 不可用"
+                        
+                        self.log_info(f"      状态: {status}")
+                        
+                        input_devices.append({
+                            'index': i,
+                            'name': device_info['name'],
+                            'available': device_available
+                        })
+                        
                         self.audio_devices.append({
                             'index': i,
                             'name': device_info['name'],
@@ -306,31 +340,235 @@ class AudioTranscriber:
                             'sample_rate': int(device_info['defaultSampleRate'])
                         })
                         
-                        # 尝试识别麦克风和立体声混音设备
+                        # 尝试识别麦克风设备
                         device_name_lower = device_info['name'].lower()
+                        
                         if any(keyword in device_name_lower for keyword in ['麦克风', 'microphone', 'mic']):
-                            if self.microphone_device_index is None:
-                                self.microphone_device_index = i
-                                self.log_info(f"检测到麦克风设备: {device_info['name']}")
-                        elif any(keyword in device_name_lower for keyword in ['立体声混音', 'stereo mix', 'what u hear', 'loopback']):
-                            if self.system_audio_device_index is None:
-                                self.system_audio_device_index = i
-                                self.log_info(f"检测到系统音频设备: {device_info['name']}")
+                            if device_available:
+                                # 优先选择专用麦克风设备，避免Sound Mapper
+                                if 'sound mapper' not in device_name_lower:
+                                    if self.microphone_device_index is None:
+                                        self.microphone_device_index = i
+                                        self.log_info(f"🎤 选择专用麦克风设备: {device_info['name']} ({status})")
+                                    else:
+                                        # 如果已经有专用麦克风，记录但不替换
+                                        self.log_info(f"发现其他专用麦克风设备: {device_info['name']} ({status})")
+                            else:
+                                self.log_warning(f"麦克风设备不可用: {device_info['name']} - 可能被其他程序占用或权限不足")
+                    
+                    self.log_info("")  # 空行分隔
                                 
                 except Exception as e:
                     self.log_warning(f"无法获取设备 {i} 的信息: {e}")
-                    
-            # 如果没有找到特定设备，使用默认设备
-            if self.microphone_device_index is None:
+            
+            # 扫描WASAPI loopback设备
+            self.log_info("🔍 扫描WASAPI Loopback设备（系统音频捕获）:")
+            try:
+                # 使用PyAudioWPatch的loopback设备生成器
+                for loopback_info in self.audio.get_loopback_device_info_generator():
+                    try:
+                        device_index = loopback_info['index']
+                        device_name = loopback_info['name']
+                        
+                        self.log_info(f"   Loopback设备 {device_index}: {device_name}")
+                        self.log_info(f"      输入通道: {loopback_info['maxInputChannels']}")
+                        self.log_info(f"      默认采样率: {int(loopback_info['defaultSampleRate'])}Hz")
+                        
+                        # 测试loopback设备可用性
+                        device_available = self.test_loopback_device_availability(device_index, device_name)
+                        status = "✅ 可用" if device_available else "❌ 不可用"
+                        
+                        self.log_info(f"      状态: {status}")
+                        
+                        loopback_devices.append({
+                            'index': device_index,
+                            'name': device_name,
+                            'available': device_available,
+                            'is_loopback': True
+                        })
+                        
+                        # 暂时不自动选择，等待后续选择默认设备
+                        # 这样可以优先选择系统默认的loopback设备
+                        
+                        self.log_info("")
+                        
+                    except Exception as e:
+                        self.log_warning(f"处理loopback设备时出错: {e}")
+                        
+            except Exception as e:
+                self.log_warning(f"扫描WASAPI Loopback设备失败: {e}")
+                self.log_info("将尝试使用传统立体声混音设备...")
+                
+                # 如果WASAPI loopback失败，回退到传统立体声混音检测
+                for device in input_devices:
+                    device_name_lower = device['name'].lower()
+                    if any(keyword in device_name_lower for keyword in ['立体声混音', 'stereo mix', 'what u hear']):
+                        if device['available'] and self.system_audio_device_index is None:
+                            self.system_audio_device_index = device['index']
+                            self.log_info(f"🔊 选择传统立体声混音设备: {device['name']}")
+                        elif not device['available']:
+                            self.log_warning(f"立体声混音设备不可用: {device['name']}")
+            
+            # 尝试获取默认WASAPI loopback设备
+            if self.system_audio_device_index is None:
                 try:
-                    default_device = self.audio.get_default_input_device_info()
-                    self.microphone_device_index = default_device['index']
-                    self.log_info(f"使用默认输入设备作为麦克风: {default_device['name']}")
+                    default_loopback = self.audio.get_default_wasapi_loopback()
+                    if default_loopback:
+                        device_index = default_loopback['index']
+                        device_name = default_loopback['name']
+                        
+                        if self.test_loopback_device_availability(device_index, device_name):
+                            self.system_audio_device_index = device_index
+                            self.log_info(f"🔊 选择系统默认WASAPI Loopback设备: {device_name}")
+                        else:
+                            self.log_warning(f"默认WASAPI Loopback设备不可用: {device_name}")
                 except Exception as e:
-                    self.log_error(f"无法获取默认输入设备: {e}")
+                    self.log_warning(f"获取默认WASAPI Loopback设备失败: {e}")
+                
+                # 如果默认设备不可用，从可用的loopback设备中选择第一个
+                if self.system_audio_device_index is None and available_loopback_devices:
+                    first_available = available_loopback_devices[0]
+                    self.system_audio_device_index = first_available['index']
+                    self.log_info(f"🔊 选择第一个可用的WASAPI Loopback设备: {first_available['name']}")
+            
+            # 总结设备扫描结果
+            available_input_devices = [d for d in input_devices if d['available']]
+            available_loopback_devices = [d for d in loopback_devices if d['available']]
+            
+            self.log_info(f"📊 设备扫描总结:")
+            self.log_info(f"   常规输入设备: 共 {len(input_devices)} 个，其中 {len(available_input_devices)} 个可用")
+            self.log_info(f"   WASAPI Loopback设备: 共 {len(loopback_devices)} 个，其中 {len(available_loopback_devices)} 个可用")
+            
+            if available_input_devices:
+                self.log_info("✅ 可用的常规输入设备:")
+                for device in available_input_devices:
+                    self.log_info(f"   • 设备 {device['index']}: {device['name']}")
+            
+            if available_loopback_devices:
+                self.log_info("✅ 可用的WASAPI Loopback设备:")
+                for device in available_loopback_devices:
+                    self.log_info(f"   • 设备 {device['index']}: {device['name']}")
+                    
+            # 如果没有找到专用麦克风设备，尝试使用可用的Sound Mapper或默认设备
+            if self.microphone_device_index is None:
+                # 首先尝试使用Sound Mapper（如果可用）
+                for device in input_devices:
+                    if device['available'] and 'sound mapper' in device['name'].lower():
+                        self.microphone_device_index = device['index']
+                        self.log_warning(f"🎤 使用Sound Mapper作为麦克风: {device['name']}")
+                        self.log_warning(f"⚠️  注意：Sound Mapper可能包含系统音频，建议使用专用麦克风")
+                        break
+                
+                # 如果还是没有找到，使用系统默认设备
+                if self.microphone_device_index is None:
+                    try:
+                        default_device = self.audio.get_default_input_device_info()
+                        self.microphone_device_index = default_device['index']
+                        self.log_warning(f"🎤 使用系统默认输入设备作为麦克风: {default_device['name']}")
+                        
+                        # 检查默认设备是否可能包含系统音频
+                        self.check_microphone_audio_leakage(default_device)
+                    except Exception as e:
+                        self.log_error(f"无法获取默认输入设备: {e}")
+            
+            # 如果没有找到系统音频设备，提供用户指导
+            if self.system_audio_device_index is None:
+                self.log_warning(f"❌ 未找到可用的系统音频设备")
+                self.log_info(f"💡 现在支持WASAPI Loopback模式，可以直接捕获系统音频！")
+                self.log_info(f"🔧 可能的解决方案:")
+                self.log_info(f"1. 确保系统音频正在播放（WASAPI Loopback需要有音频输出）")
+                self.log_info(f"2. 检查音频驱动程序是否支持WASAPI")
+                self.log_info(f"3. 尝试在Windows声音设置中启用'立体声混音'设备")
+                self.log_info(f"4. 重启程序以重新检测设备")
+                self.log_info(f"")
+                self.log_info(f"✨ WASAPI Loopback的优势:")
+                self.log_info(f"   • 直接捕获系统音频输出，无需启用立体声混音")
+                self.log_info(f"   • 音质更好，延迟更低")
+                self.log_info(f"   • 不会混入麦克风音频")
+            
+            # 打印最终的音频源配置
+            self.log_info("🎯 最终音频源配置:")
+            if self.microphone_device_index is not None:
+                mic_device = self.audio.get_device_info_by_index(self.microphone_device_index)
+                self.log_info(f"   麦克风: 设备 {self.microphone_device_index} - {mic_device['name']}")
+            else:
+                self.log_warning(f"   麦克风: 未配置")
+                
+            if self.system_audio_device_index is not None:
+                sys_device = self.audio.get_device_info_by_index(self.system_audio_device_index)
+                device_type = "WASAPI Loopback" if any(d['index'] == self.system_audio_device_index and d.get('is_loopback') for d in loopback_devices) else "传统设备"
+                self.log_info(f"   系统音频: 设备 {self.system_audio_device_index} - {sys_device['name']} ({device_type})")
+            else:
+                self.log_warning(f"   系统音频: 未配置")
+            
+            # 如果系统音频设备不可用，检查麦克风是否可能录制到系统音频
+            if self.system_audio_device_index is None or not self.test_device_availability(self.system_audio_device_index, "系统音频设备"):
+                if self.microphone_device_index is not None:
+                    mic_device_info = self.audio.get_device_info_by_index(self.microphone_device_index)
+                    self.check_microphone_audio_leakage(mic_device_info)
                     
         except Exception as e:
             self.log_error(f"初始化音频设备失败: {e}")
+    
+    def test_device_availability(self, device_index, device_name):
+        """测试音频设备是否可用"""
+        try:
+            # 尝试打开设备进行短暂测试
+            test_stream = self.audio.open(
+                format=self.format,
+                channels=1,  # 使用单声道测试
+                rate=self.rate,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=self.chunk
+            )
+            # 立即关闭测试流
+            test_stream.close()
+            return True
+        except Exception as e:
+            self.log_debug(f"设备 {device_name} 不可用: {e}")
+            return False
+    
+    def test_loopback_device_availability(self, device_index, device_name):
+        """测试WASAPI loopback设备是否可用"""
+        try:
+            # 获取设备信息
+            device_info = self.audio.get_device_info_by_index(device_index)
+            max_channels = device_info['maxInputChannels']
+            default_rate = int(device_info['defaultSampleRate'])
+            
+            # 尝试不同的通道配置
+            channel_configs = [max_channels, 2, 1]  # 先尝试最大通道数，再尝试立体声和单声道
+            
+            for channels in channel_configs:
+                if channels > max_channels or channels <= 0:
+                    continue
+                    
+                try:
+                    # 尝试打开WASAPI loopback设备进行短暂测试
+                    # PyAudioWPatch的loopback设备不需要as_loopback参数，直接通过设备索引访问
+                    test_stream = self.audio.open(
+                        format=self.format,
+                        channels=channels,
+                        rate=default_rate,
+                        input=True,
+                        input_device_index=device_index,
+                        frames_per_buffer=self.chunk
+                    )
+                    # 立即关闭测试流
+                    test_stream.close()
+                    self.log_debug(f"WASAPI Loopback设备 {device_name} 可用 (通道: {channels}, 采样率: {default_rate}Hz)")
+                    return True
+                except Exception as e:
+                    self.log_debug(f"WASAPI Loopback设备 {device_name} 配置失败 (通道: {channels}): {e}")
+                    continue
+            
+            self.log_debug(f"WASAPI Loopback设备 {device_name} 所有配置都不可用")
+            return False
+                
+        except Exception as e:
+            self.log_debug(f"WASAPI Loopback设备 {device_name} 信息获取失败: {e}")
+            return False
     
     def refresh_audio_devices(self):
         """刷新音频设备列表"""
@@ -438,6 +676,108 @@ class AudioTranscriber:
     def log_error(self, message):
         """记录错误日志"""
         self.logger.error(message)
+    
+    def log_debug(self, message):
+        """记录调试日志"""
+        self.logger.debug(message)
+    
+    def check_microphone_audio_leakage(self, device_info):
+        """检查麦克风设备是否可能录制到系统音频"""
+        device_name = device_info['name'].lower()
+        
+        # 检查设备名称中的关键词
+        leakage_indicators = [
+            'sound mapper',  # Windows Sound Mapper可能混合多个音频源
+            'realtek hd audio',  # Realtek驱动可能有音频泄漏
+            'high definition audio',  # 高清音频设备可能有泄漏
+            'generic',  # 通用设备可能混合音频
+            'default'  # 默认设备可能包含多个源
+        ]
+        
+        has_leakage_risk = any(indicator in device_name for indicator in leakage_indicators)
+        
+        if has_leakage_risk:
+            self.log_warning(f"⚠️  麦克风设备可能录制到系统音频！")
+            self.log_warning(f"设备名称: {device_info['name']}")
+            self.log_warning(f"可能原因:")
+            self.log_warning(f"1. Windows Sound Mapper混合了多个音频源")
+            self.log_warning(f"2. 音频驱动程序配置问题")
+            self.log_warning(f"3. 麦克风监听功能启用（会回放系统音频）")
+            self.log_warning(f"4. 音频设备硬件层面的音频泄漏")
+            self.log_warning(f"")
+            self.log_warning(f"🔧 建议解决方案:")
+            self.log_warning(f"1. 在Windows声音设置中禁用麦克风的'侦听此设备'选项")
+            self.log_warning(f"2. 检查音频驱动程序设置，禁用音频增强功能")
+            self.log_warning(f"3. 使用专用的麦克风设备而非Sound Mapper")
+            self.log_warning(f"4. 在录音软件中选择特定的麦克风设备")
+            self.log_warning(f"5. 检查是否有其他程序在混合音频流")
+        else:
+             self.log_info(f"✅ 麦克风设备看起来是纯净的音频输入源")
+    
+    def analyze_microphone_audio_leakage(self, mic_array):
+        """实时分析麦克风音频是否包含系统音频泄漏"""
+        self.audio_block_count += 1
+        
+        # 计算音频能量（RMS）
+        audio_energy = np.sqrt(np.mean(mic_array.astype(np.float32) ** 2))
+        
+        # 收集音频样本用于分析
+        self.mic_audio_samples.append({
+            'energy': audio_energy,
+            'max_amplitude': np.max(np.abs(mic_array)),
+            'timestamp': time.time()
+        })
+        
+        # 保持样本数量在合理范围内
+        if len(self.mic_audio_samples) > 100:
+            self.mic_audio_samples = self.mic_audio_samples[-50:]
+        
+        # 每隔一定间隔进行泄漏检测
+        if self.audio_block_count % self.leakage_detection_interval == 0 and len(self.mic_audio_samples) >= 20:
+            self.detect_audio_leakage_patterns()
+    
+    def detect_audio_leakage_patterns(self):
+        """检测音频泄漏模式"""
+        current_time = time.time()
+        
+        # 避免频繁警告
+        if current_time - self.last_leakage_warning_time < self.leakage_warning_interval:
+            return
+        
+        # 分析最近的音频样本
+        recent_samples = self.mic_audio_samples[-20:]
+        energies = [sample['energy'] for sample in recent_samples]
+        max_amps = [sample['max_amplitude'] for sample in recent_samples]
+        
+        # 计算统计指标
+        avg_energy = np.mean(energies)
+        energy_std = np.std(energies)
+        max_energy = np.max(energies)
+        avg_amplitude = np.mean(max_amps)
+        
+        # 检测可疑模式
+        suspicious_patterns = []
+        
+        # 1. 持续高能量（可能是系统音频泄漏）
+        if avg_energy > 1000 and energy_std < avg_energy * 0.3:
+            suspicious_patterns.append("持续高能量音频（可能包含系统音频）")
+        
+        # 2. 异常高的峰值振幅
+        if avg_amplitude > 15000:
+            suspicious_patterns.append("异常高的音频振幅（可能是音频混合）")
+        
+        # 3. 能量变化过于规律（可能是数字音频泄漏）
+        if len(set([int(e/100) for e in energies])) < 5 and avg_energy > 500:
+            suspicious_patterns.append("音频能量变化过于规律（可能是数字音频泄漏）")
+        
+        # 如果检测到可疑模式，发出警告
+        if suspicious_patterns:
+            self.last_leakage_warning_time = current_time
+            self.log_warning(f"🔍 检测到可疑的音频泄漏模式:")
+            for pattern in suspicious_patterns:
+                self.log_warning(f"   • {pattern}")
+            self.log_warning(f"📊 音频统计: 平均能量={avg_energy:.1f}, 最大振幅={avg_amplitude:.0f}")
+            self.log_warning(f"💡 建议检查麦克风设置，确保没有启用'侦听此设备'或音频增强功能")
         
     def toggle_microphone(self):
         """切换麦克风启用状态"""
@@ -598,17 +938,67 @@ class AudioTranscriber:
             # 设置系统音频流
             if self.system_audio_enabled and self.system_audio_device_index is not None:
                 try:
-                    self.system_audio_stream = self.audio.open(
-                        format=self.format,
-                        channels=self.channels,
-                        rate=self.rate,
-                        input=True,
-                        input_device_index=self.system_audio_device_index,
-                        frames_per_buffer=self.chunk
-                    )
+                    # 检查是否为WASAPI loopback设备
+                    is_loopback_device = False
+                    try:
+                        # 尝试从loopback设备列表中查找
+                        for loopback_info in self.audio.get_loopback_device_info_generator():
+                            if loopback_info['index'] == self.system_audio_device_index:
+                                is_loopback_device = True
+                                break
+                    except:
+                        pass
+                    
+                    # 根据设备类型创建音频流
+                    if is_loopback_device:
+                        # WASAPI Loopback设备 - 使用设备的最佳配置
+                        device_info = self.audio.get_device_info_by_index(self.system_audio_device_index)
+                        max_channels = device_info['maxInputChannels']
+                        default_rate = int(device_info['defaultSampleRate'])
+                        
+                        # 尝试不同的通道配置
+                        channel_configs = [max_channels, 2, 1]  # 先尝试最大通道数，再尝试立体声和单声道
+                        stream_created = False
+                        
+                        for channels in channel_configs:
+                            if channels > max_channels or channels <= 0:
+                                continue
+                                
+                            try:
+                                self.system_audio_stream = self.audio.open(
+                                    format=self.format,
+                                    channels=channels,
+                                    rate=default_rate,
+                                    input=True,
+                                    input_device_index=self.system_audio_device_index,
+                                    frames_per_buffer=self.chunk
+                                )
+                                self.log_info(f"WASAPI Loopback音频流已启动 (通道: {channels}, 采样率: {default_rate}Hz)")
+                                stream_created = True
+                                break
+                            except Exception as e:
+                                self.log_debug(f"WASAPI Loopback设备通道配置失败 (通道: {channels}): {e}")
+                                continue
+                        
+                        if not stream_created:
+                            raise Exception("所有通道配置都失败")
+                    else:
+                        # 传统音频设备（如立体声混音）
+                        self.system_audio_stream = self.audio.open(
+                            format=self.format,
+                            channels=self.channels,
+                            rate=self.rate,
+                            input=True,
+                            input_device_index=self.system_audio_device_index,
+                            frames_per_buffer=self.chunk
+                        )
+                        self.log_info(f"传统系统音频流已启动")
+                    
                     sys_device_info = self.audio.get_device_info_by_index(self.system_audio_device_index)
-                    streams_info.append(f"系统音频: {sys_device_info['name']}")
-                    self.log_info(f"系统音频流已启动: {sys_device_info['name']}")
+                    device_type = "WASAPI Loopback" if is_loopback_device else "传统设备"
+                    streams_info.append(f"系统音频: {sys_device_info['name']} ({device_type})")
+                    self.log_info(f"系统音频流已启动: {sys_device_info['name']} ({device_type})")
+                    
                 except Exception as e:
                     self.log_error(f"无法启动系统音频流: {e}")
                     self.system_audio_stream = None
@@ -654,6 +1044,9 @@ class AudioTranscriber:
                                 mic_array = mic_array.astype(np.float32) * self.audio_gain
                                 mic_array = np.clip(mic_array, -32768, 32767).astype(np.int16)
                             
+                            # 实时检测麦克风音频泄漏
+                            self.analyze_microphone_audio_leakage(mic_array)
+                            
                             # 存储独立的麦克风数据
                             self.microphone_frames.append(mic_array.tobytes())
                             mixed_data = mixed_data + mic_array
@@ -669,6 +1062,22 @@ class AudioTranscriber:
                         try:
                             sys_data = self.system_audio_stream.read(self.chunk, exception_on_overflow=False)
                             sys_array = np.frombuffer(sys_data, dtype=np.int16)
+                            
+                            # 处理多通道音频数据 - 转换为单声道
+                            if len(sys_array) > self.chunk:
+                                # 多通道数据，需要转换为单声道
+                                channels = len(sys_array) // self.chunk
+                                sys_array = sys_array.reshape(-1, channels)
+                                # 取所有通道的平均值转换为单声道
+                                sys_array = np.mean(sys_array, axis=1).astype(np.int16)
+                            elif len(sys_array) < self.chunk:
+                                # 数据不足，填充零
+                                padding = np.zeros(self.chunk - len(sys_array), dtype=np.int16)
+                                sys_array = np.concatenate([sys_array, padding])
+                            
+                            # 确保数组长度正确
+                            sys_array = sys_array[:self.chunk]
+                            
                             # 应用增益
                             if self.audio_gain != 1.0:
                                 sys_array = sys_array.astype(np.float32) * self.audio_gain
@@ -829,6 +1238,43 @@ class AudioTranscriber:
         self.log_info("停止录音...")
         self.recording = False
         self.real_time_transcription = False
+        
+        # 等待转写线程结束
+        threads_to_wait = []
+        
+        if hasattr(self, 'transcription_thread') and self.transcription_thread and self.transcription_thread.is_alive():
+            threads_to_wait.append(("混合音频转写", self.transcription_thread))
+            
+        if hasattr(self, 'microphone_transcription_thread') and self.microphone_transcription_thread and self.microphone_transcription_thread.is_alive():
+            threads_to_wait.append(("麦克风转写", self.microphone_transcription_thread))
+            
+        if hasattr(self, 'system_audio_transcription_thread') and self.system_audio_transcription_thread and self.system_audio_transcription_thread.is_alive():
+            threads_to_wait.append(("系统音频转写", self.system_audio_transcription_thread))
+            
+        if hasattr(self, 'record_thread') and self.record_thread and self.record_thread.is_alive():
+            threads_to_wait.append(("录音", self.record_thread))
+            
+        if hasattr(self, 'timer_thread') and self.timer_thread and self.timer_thread.is_alive():
+            threads_to_wait.append(("计时", self.timer_thread))
+        
+        # 等待所有线程结束（最多等待3秒）
+        for thread_name, thread in threads_to_wait:
+            try:
+                self.log_info(f"等待{thread_name}线程结束...")
+                thread.join(timeout=3.0)
+                if thread.is_alive():
+                    self.log_warning(f"{thread_name}线程未能在3秒内结束")
+                else:
+                    self.log_info(f"{thread_name}线程已结束")
+            except Exception as e:
+                self.log_warning(f"等待{thread_name}线程时出错: {e}")
+         
+        # 重置线程变量
+        self.transcription_thread = None
+        self.microphone_transcription_thread = None
+        self.system_audio_transcription_thread = None
+        self.record_thread = None
+        self.timer_thread = None
         
         # 清理所有音频流
         streams_closed = []
