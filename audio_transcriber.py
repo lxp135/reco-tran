@@ -20,6 +20,7 @@ import torch
 import numpy as np
 import psutil
 import gc
+from scipy import signal
 try:
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
     TRANSFORMERS_AVAILABLE = True
@@ -951,37 +952,26 @@ class AudioTranscriber:
                     
                     # 根据设备类型创建音频流
                     if is_loopback_device:
-                        # WASAPI Loopback设备 - 使用设备的最佳配置
+                        # WASAPI Loopback设备 - 使用与测试程序相同的配置
                         device_info = self.audio.get_device_info_by_index(self.system_audio_device_index)
-                        max_channels = device_info['maxInputChannels']
+                        max_channels = int(device_info['maxInputChannels'])
                         default_rate = int(device_info['defaultSampleRate'])
                         
-                        # 尝试不同的通道配置
-                        channel_configs = [max_channels, 2, 1]  # 先尝试最大通道数，再尝试立体声和单声道
-                        stream_created = False
+                        # 直接使用设备的最大通道数和默认采样率（与测试程序一致）
+                        self.system_audio_stream = self.audio.open(
+                            format=self.format,
+                            channels=max_channels,  # 使用设备的实际通道数
+                            rate=default_rate,      # 使用设备的默认采样率
+                            input=True,
+                            input_device_index=self.system_audio_device_index,
+                            frames_per_buffer=self.chunk
+                        )
                         
-                        for channels in channel_configs:
-                            if channels > max_channels or channels <= 0:
-                                continue
-                                
-                            try:
-                                self.system_audio_stream = self.audio.open(
-                                    format=self.format,
-                                    channels=channels,
-                                    rate=default_rate,
-                                    input=True,
-                                    input_device_index=self.system_audio_device_index,
-                                    frames_per_buffer=self.chunk
-                                )
-                                self.log_info(f"WASAPI Loopback音频流已启动 (通道: {channels}, 采样率: {default_rate}Hz)")
-                                stream_created = True
-                                break
-                            except Exception as e:
-                                self.log_debug(f"WASAPI Loopback设备通道配置失败 (通道: {channels}): {e}")
-                                continue
+                        # 存储实际使用的配置信息
+                        self.system_audio_channels = max_channels
+                        self.system_audio_rate = default_rate
                         
-                        if not stream_created:
-                            raise Exception("所有通道配置都失败")
+                        self.log_info(f"WASAPI Loopback音频流已启动 (通道: {max_channels}, 采样率: {default_rate}Hz)")
                     else:
                         # 传统音频设备（如立体声混音）
                         self.system_audio_stream = self.audio.open(
@@ -1064,12 +1054,33 @@ class AudioTranscriber:
                             sys_array = np.frombuffer(sys_data, dtype=np.int16)
                             
                             # 处理多通道音频数据 - 转换为单声道
-                            if len(sys_array) > self.chunk:
-                                # 多通道数据，需要转换为单声道
-                                channels = len(sys_array) // self.chunk
-                                sys_array = sys_array.reshape(-1, channels)
-                                # 取所有通道的平均值转换为单声道
-                                sys_array = np.mean(sys_array, axis=1).astype(np.int16)
+                            # 使用存储的实际通道数信息
+                            channels = getattr(self, 'system_audio_channels', 1)
+                            expected_length = self.chunk * channels
+                            
+                            if len(sys_array) >= expected_length:
+                                # 确保使用正确的数据长度
+                                if channels > 1:
+                                    # 重新整形为 (samples, channels) 格式
+                                    # 确保使用正确的数据长度
+                                    sys_array = sys_array[:expected_length].reshape(self.chunk, channels)
+                                    
+                                    # WASAPI Loopback专用处理：由于返回的是系统混音格式数据
+                                    # 不是真正的多声道音频，而是已经混合的数据
+                                    # 采用保守的处理方式，避免引入噪音
+                                    
+                                    # WASAPI Loopback简化处理 - 基于测试验证的算法
+                                    # 测试确认所有通道数据基本相同，使用立体声简单平均即可
+                                    if channels >= 2:
+                                        left = sys_array[:, 0].astype(np.float32)
+                                        right = sys_array[:, 1].astype(np.float32)
+                                        sys_array = ((left + right) / 2).astype(np.int16)
+                                    else:
+                                        # 单声道直接使用
+                                        sys_array = sys_array[:, 0]
+                                else:
+                                    # 如果计算出的通道数为1，直接截取
+                                    sys_array = sys_array[:self.chunk]
                             elif len(sys_array) < self.chunk:
                                 # 数据不足，填充零
                                 padding = np.zeros(self.chunk - len(sys_array), dtype=np.int16)
@@ -1078,12 +1089,55 @@ class AudioTranscriber:
                             # 确保数组长度正确
                             sys_array = sys_array[:self.chunk]
                             
+                            # 添加调试信息（仅在第一次读取时）
+                            if not hasattr(self, '_sys_audio_debug_logged'):
+                                self._sys_audio_debug_logged = True
+                                original_len = len(np.frombuffer(sys_data, dtype=np.int16))
+                                final_len = len(sys_array)
+                                
+                                # 简化的调试信息
+                                if channels > 1:
+                                    original_array = np.frombuffer(sys_data, dtype=np.int16)
+                                    if len(original_array) >= expected_length:
+                                        reshaped = original_array[:expected_length].reshape(self.chunk, channels)
+                                        rms_left = np.sqrt(np.mean(reshaped[:, 0].astype(np.float32)**2))
+                                        rms_right = np.sqrt(np.mean(reshaped[:, 1].astype(np.float32)**2)) if channels > 1 else rms_left
+                                        self.log_debug(f"系统音频: L_RMS={rms_left:.1f}, R_RMS={rms_right:.1f}, 通道数={channels}")
+                                
+                                self.log_debug(f"系统音频数据处理: 原始长度={original_len}, 最终长度={final_len}, chunk={self.chunk}, 通道数={channels}")
+                            
+                            # 重采样处理：将系统音频从设备采样率重采样到16kHz
+                            sys_rate = getattr(self, 'system_audio_rate', self.rate)
+                            if sys_rate != self.rate:
+                                # 需要重采样
+                                sys_array_float = sys_array.astype(np.float32)
+                                # 计算重采样比例
+                                resample_ratio = self.rate / sys_rate
+                                # 使用scipy进行重采样
+                                resampled_length = int(len(sys_array_float) * resample_ratio)
+                                sys_array_resampled = signal.resample(sys_array_float, resampled_length)
+                                # 确保长度匹配chunk大小
+                                if len(sys_array_resampled) > self.chunk:
+                                    sys_array = sys_array_resampled[:self.chunk].astype(np.int16)
+                                elif len(sys_array_resampled) < self.chunk:
+                                    # 填充到chunk大小
+                                    padding = np.zeros(self.chunk - len(sys_array_resampled), dtype=np.float32)
+                                    sys_array_padded = np.concatenate([sys_array_resampled, padding])
+                                    sys_array = sys_array_padded.astype(np.int16)
+                                else:
+                                    sys_array = sys_array_resampled.astype(np.int16)
+                                
+                                # 添加重采样调试信息（仅第一次）
+                                if not hasattr(self, '_resample_debug_logged'):
+                                    self._resample_debug_logged = True
+                                    self.log_info(f"系统音频重采样: {sys_rate}Hz -> {self.rate}Hz (比例: {resample_ratio:.3f})")
+                            
                             # 应用增益
                             if self.audio_gain != 1.0:
                                 sys_array = sys_array.astype(np.float32) * self.audio_gain
                                 sys_array = np.clip(sys_array, -32768, 32767).astype(np.int16)
                             
-                            # 存储独立的系统音频数据
+                            # 存储独立的系统音频数据（重采样后的16kHz数据）
                             self.system_audio_frames.append(sys_array.tobytes())
                             mixed_data = mixed_data + sys_array
                             has_audio = True
@@ -1135,8 +1189,9 @@ class AudioTranscriber:
                     if self.real_time_transcription and self.microphone_enabled and mic_data:
                         self.microphone_buffer.append(mic_data)
                         
-                        # 限制缓冲区大小
-                        max_buffer_size = self.rate * self.buffer_duration * 2
+                        # 限制缓冲区大小（使用麦克风的实际采样率）
+                        mic_rate = self.rate  # 麦克风使用16kHz
+                        max_buffer_size = mic_rate * self.buffer_duration * 2
                         if len(self.microphone_buffer) * self.chunk * 2 > max_buffer_size:
                             self.microphone_buffer.pop(0)
                         
@@ -1151,8 +1206,9 @@ class AudioTranscriber:
                     if self.real_time_transcription and self.system_audio_enabled and sys_data:
                         self.system_audio_buffer.append(sys_data)
                         
-                        # 限制缓冲区大小
-                        max_buffer_size = self.rate * self.buffer_duration * 2
+                        # 限制缓冲区大小（使用系统音频的实际采样率）
+                        sys_rate = getattr(self, 'system_audio_rate', self.rate)
+                        max_buffer_size = sys_rate * self.buffer_duration * 2
                         if len(self.system_audio_buffer) * self.chunk * 2 > max_buffer_size:
                             self.system_audio_buffer.pop(0)
                         
@@ -1167,8 +1223,9 @@ class AudioTranscriber:
                     if self.real_time_transcription and has_audio:
                         self.audio_buffer.append(final_data)
                         
-                        # 限制音频缓冲区大小，防止内存溢出
-                        max_buffer_size = self.rate * self.buffer_duration * 2
+                        # 限制音频缓冲区大小，防止内存溢出（使用混合音频的采样率）
+                        mixed_rate = self.rate  # 混合音频使用16kHz
+                        max_buffer_size = mixed_rate * self.buffer_duration * 2
                         if len(self.audio_buffer) * self.chunk * 2 > max_buffer_size:
                             self.audio_buffer.pop(0)
                         
