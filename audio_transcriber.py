@@ -98,6 +98,9 @@ class AudioTranscriber:
         # 当前录音文件路径
         self.current_audio_file = None
         
+        # 音频文件管理
+        self.current_audio_files = []  # 本次录音文件列表
+        
         # 实时转写相关
         self.real_time_transcription = False
         self.audio_queue = queue.Queue()
@@ -272,7 +275,65 @@ class AudioTranscriber:
         self.log_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_area.config(state=tk.DISABLED)  # 设置为只读
         
-
+        # 音频文件管理区域（右列）
+        audio_files_frame = ttk.LabelFrame(main_frame, text="音频文件管理", padding="10")
+        audio_files_frame.grid(row=3, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 0))
+        audio_files_frame.columnconfigure(0, weight=1)
+        audio_files_frame.rowconfigure(1, weight=1)
+        audio_files_frame.rowconfigure(3, weight=1)
+        
+        # 本次录音文件区域
+        current_files_frame = ttk.LabelFrame(audio_files_frame, text="本次录音文件", padding="5")
+        current_files_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+        current_files_frame.columnconfigure(0, weight=1)
+        current_files_frame.rowconfigure(0, weight=1)
+        
+        # 本次录音文件列表
+        self.current_files_listbox = tk.Listbox(current_files_frame, height=6, font=("Arial", 9))
+        current_files_scrollbar = ttk.Scrollbar(current_files_frame, orient="vertical", command=self.current_files_listbox.yview)
+        self.current_files_listbox.configure(yscrollcommand=current_files_scrollbar.set)
+        self.current_files_listbox.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        current_files_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # 本次录音文件操作按钮
+        current_files_buttons = ttk.Frame(current_files_frame)
+        current_files_buttons.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
+        ttk.Button(current_files_buttons, text="播放", command=self.play_current_file, width=8).grid(row=0, column=0, padx=(0, 5))
+        ttk.Button(current_files_buttons, text="打开文件夹", command=self.open_current_folder, width=10).grid(row=0, column=1, padx=(0, 5))
+        ttk.Button(current_files_buttons, text="清空", command=self.clear_current_files, width=8).grid(row=0, column=2)
+        
+        # 分隔线
+        ttk.Separator(audio_files_frame, orient='horizontal').grid(row=2, column=0, sticky=(tk.W, tk.E), pady=5)
+        
+        # 历史文件区域
+        history_files_frame = ttk.LabelFrame(audio_files_frame, text="历史文件", padding="5")
+        history_files_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        history_files_frame.columnconfigure(0, weight=1)
+        history_files_frame.rowconfigure(1, weight=1)
+        
+        # 历史文件控制按钮
+        history_control_frame = ttk.Frame(history_files_frame)
+        history_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        ttk.Button(history_control_frame, text="刷新", command=self.refresh_history_files, width=8).grid(row=0, column=0, padx=(0, 5))
+        ttk.Button(history_control_frame, text="清理", command=self.clean_history_files, width=8).grid(row=0, column=1)
+        
+        # 历史文件列表
+        self.history_files_listbox = tk.Listbox(history_files_frame, height=12, font=("Arial", 9))
+        history_files_scrollbar = ttk.Scrollbar(history_files_frame, orient="vertical", command=self.history_files_listbox.yview)
+        self.history_files_listbox.configure(yscrollcommand=history_files_scrollbar.set)
+        self.history_files_listbox.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        history_files_scrollbar.grid(row=1, column=1, sticky=(tk.N, tk.S))
+        
+        # 历史文件操作按钮
+        history_files_buttons = ttk.Frame(history_files_frame)
+        history_files_buttons.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
+        ttk.Button(history_files_buttons, text="播放", command=self.play_history_file, width=8).grid(row=0, column=0, padx=(0, 5))
+        ttk.Button(history_files_buttons, text="删除", command=self.delete_history_file, width=8).grid(row=0, column=1, padx=(0, 5))
+        ttk.Button(history_files_buttons, text="打开文件夹", command=self.open_history_folder, width=10).grid(row=0, column=2)
+        
+        # 初始化音频文件列表
+        self.current_audio_files = []  # 存储本次录音的文件路径
+        self.refresh_history_files()  # 加载历史文件
         
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
@@ -1568,6 +1629,8 @@ class AudioTranscriber:
         
         if saved_files:
             self.status_bar.config(text=f"录音已保存: {len(saved_files)} 个文件")
+            # 更新本次录音文件显示
+            self.update_current_files_display(saved_files)
         else:
             self.status_bar.config(text="录音完成，但没有音频数据")
         
@@ -2315,6 +2378,302 @@ class AudioTranscriber:
         except Exception as e:
             self.log_error(f"Whisper转写失败: {str(e)}")
             raise Exception(f"Whisper转写失败: {str(e)}")
+    
+    def update_current_files_display(self, saved_files):
+        """更新本次录音文件显示"""
+        try:
+            # 清空当前列表
+            self.current_files_listbox.delete(0, tk.END)
+            self.current_audio_files.clear()
+            
+            # 添加新文件
+            for file_path in saved_files:
+                if os.path.exists(file_path):
+                    filename = os.path.basename(file_path)
+                    file_size = os.path.getsize(file_path)
+                    size_mb = file_size / (1024 * 1024)
+                    display_text = f"{filename} ({size_mb:.1f}MB)"
+                    
+                    self.current_files_listbox.insert(tk.END, display_text)
+                    self.current_audio_files.append(file_path)
+                    
+            self.log_info(f"📁 本次录音生成 {len(saved_files)} 个文件")
+            
+        except Exception as e:
+            self.log_error(f"更新本次录音文件显示失败: {e}")
+    
+    def play_current_file(self):
+        """播放选中的本次录音文件"""
+        try:
+            selection = self.current_files_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("提示", "请先选择要播放的文件")
+                return
+            
+            file_index = selection[0]
+            if file_index < len(self.current_audio_files):
+                file_path = self.current_audio_files[file_index]
+                self.play_audio_file(file_path)
+            
+        except Exception as e:
+            self.log_error(f"播放文件失败: {e}")
+            messagebox.showerror("错误", f"播放文件失败: {e}")
+    
+    def open_current_folder(self):
+        """打开本次录音文件所在文件夹"""
+        try:
+            if self.current_audio_files:
+                folder_path = os.path.dirname(self.current_audio_files[0])
+                self.open_folder(folder_path)
+            else:
+                # 打开默认音频文件夹
+                audio_dir = os.path.join(os.getcwd(), "audio")
+                if os.path.exists(audio_dir):
+                    self.open_folder(audio_dir)
+                else:
+                    messagebox.showinfo("提示", "暂无录音文件")
+                    
+        except Exception as e:
+            self.log_error(f"打开文件夹失败: {e}")
+            messagebox.showerror("错误", f"打开文件夹失败: {e}")
+    
+    def clear_current_files(self):
+        """清空本次录音文件列表"""
+        try:
+            if messagebox.askyesno("确认", "确定要清空本次录音文件列表吗？\n（不会删除实际文件）"):
+                self.current_files_listbox.delete(0, tk.END)
+                self.current_audio_files.clear()
+                self.log_info("📁 已清空本次录音文件列表")
+                
+        except Exception as e:
+            self.log_error(f"清空文件列表失败: {e}")
+    
+    def refresh_history_files(self):
+        """刷新历史文件列表"""
+        try:
+            self.history_files_listbox.delete(0, tk.END)
+            
+            audio_dir = os.path.join(os.getcwd(), "audio")
+            if not os.path.exists(audio_dir):
+                return
+            
+            # 获取所有音频文件
+            audio_files = []
+            for filename in os.listdir(audio_dir):
+                if filename.lower().endswith(('.wav', '.mp3', '.m4a', '.flac')):
+                    file_path = os.path.join(audio_dir, filename)
+                    file_stat = os.stat(file_path)
+                    audio_files.append({
+                        'path': file_path,
+                        'name': filename,
+                        'size': file_stat.st_size,
+                        'mtime': file_stat.st_mtime
+                    })
+            
+            # 按修改时间倒序排列
+            audio_files.sort(key=lambda x: x['mtime'], reverse=True)
+            
+            # 添加到列表框
+            for file_info in audio_files:
+                size_mb = file_info['size'] / (1024 * 1024)
+                mtime_str = datetime.fromtimestamp(file_info['mtime']).strftime('%m-%d %H:%M')
+                display_text = f"{file_info['name']} ({size_mb:.1f}MB) [{mtime_str}]"
+                self.history_files_listbox.insert(tk.END, display_text)
+            
+            self.log_info(f"📁 刷新历史文件列表，共 {len(audio_files)} 个文件")
+            
+        except Exception as e:
+            self.log_error(f"刷新历史文件失败: {e}")
+    
+    def clean_history_files(self):
+        """清理历史文件"""
+        try:
+            audio_dir = os.path.join(os.getcwd(), "audio")
+            if not os.path.exists(audio_dir):
+                messagebox.showinfo("提示", "音频文件夹不存在")
+                return
+            
+            # 获取所有音频文件
+            audio_files = []
+            for filename in os.listdir(audio_dir):
+                if filename.lower().endswith(('.wav', '.mp3', '.m4a', '.flac')):
+                    file_path = os.path.join(audio_dir, filename)
+                    audio_files.append(file_path)
+            
+            if not audio_files:
+                messagebox.showinfo("提示", "没有可清理的文件")
+                return
+            
+            # 确认删除
+            result = messagebox.askyesnocancel(
+                "清理历史文件", 
+                f"发现 {len(audio_files)} 个历史音频文件\n\n" +
+                "是：删除所有历史文件\n" +
+                "否：删除7天前的文件\n" +
+                "取消：不删除"
+            )
+            
+            if result is None:  # 取消
+                return
+            elif result:  # 是 - 删除所有
+                files_to_delete = audio_files
+            else:  # 否 - 删除7天前的文件
+                import time
+                week_ago = time.time() - 7 * 24 * 3600
+                files_to_delete = [f for f in audio_files if os.path.getmtime(f) < week_ago]
+            
+            if not files_to_delete:
+                messagebox.showinfo("提示", "没有符合条件的文件需要删除")
+                return
+            
+            # 删除文件
+            deleted_count = 0
+            for file_path in files_to_delete:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                except Exception as e:
+                    self.log_error(f"删除文件失败 {file_path}: {e}")
+            
+            self.log_info(f"🗑️ 已删除 {deleted_count} 个历史文件")
+            messagebox.showinfo("完成", f"已删除 {deleted_count} 个文件")
+            
+            # 刷新列表
+            self.refresh_history_files()
+            
+        except Exception as e:
+            self.log_error(f"清理历史文件失败: {e}")
+            messagebox.showerror("错误", f"清理历史文件失败: {e}")
+    
+    def play_history_file(self):
+        """播放选中的历史文件"""
+        try:
+            selection = self.history_files_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("提示", "请先选择要播放的文件")
+                return
+            
+            file_index = selection[0]
+            audio_dir = os.path.join(os.getcwd(), "audio")
+            
+            # 重新获取文件列表（保持与显示一致的顺序）
+            audio_files = []
+            for filename in os.listdir(audio_dir):
+                if filename.lower().endswith(('.wav', '.mp3', '.m4a', '.flac')):
+                    file_path = os.path.join(audio_dir, filename)
+                    file_stat = os.stat(file_path)
+                    audio_files.append({
+                        'path': file_path,
+                        'mtime': file_stat.st_mtime
+                    })
+            
+            audio_files.sort(key=lambda x: x['mtime'], reverse=True)
+            
+            if file_index < len(audio_files):
+                file_path = audio_files[file_index]['path']
+                self.play_audio_file(file_path)
+            
+        except Exception as e:
+            self.log_error(f"播放历史文件失败: {e}")
+            messagebox.showerror("错误", f"播放历史文件失败: {e}")
+    
+    def delete_history_file(self):
+        """删除选中的历史文件"""
+        try:
+            selection = self.history_files_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("提示", "请先选择要删除的文件")
+                return
+            
+            file_index = selection[0]
+            audio_dir = os.path.join(os.getcwd(), "audio")
+            
+            # 重新获取文件列表
+            audio_files = []
+            for filename in os.listdir(audio_dir):
+                if filename.lower().endswith(('.wav', '.mp3', '.m4a', '.flac')):
+                    file_path = os.path.join(audio_dir, filename)
+                    file_stat = os.stat(file_path)
+                    audio_files.append({
+                        'path': file_path,
+                        'name': filename,
+                        'mtime': file_stat.st_mtime
+                    })
+            
+            audio_files.sort(key=lambda x: x['mtime'], reverse=True)
+            
+            if file_index < len(audio_files):
+                file_info = audio_files[file_index]
+                if messagebox.askyesno("确认删除", f"确定要删除文件吗？\n\n{file_info['name']}"):
+                    os.remove(file_info['path'])
+                    self.log_info(f"🗑️ 已删除文件: {file_info['name']}")
+                    messagebox.showinfo("完成", "文件已删除")
+                    
+                    # 刷新列表
+                    self.refresh_history_files()
+            
+        except Exception as e:
+            self.log_error(f"删除历史文件失败: {e}")
+            messagebox.showerror("错误", f"删除历史文件失败: {e}")
+    
+    def open_history_folder(self):
+        """打开历史文件所在文件夹"""
+        try:
+            audio_dir = os.path.join(os.getcwd(), "audio")
+            self.open_folder(audio_dir)
+            
+        except Exception as e:
+            self.log_error(f"打开历史文件夹失败: {e}")
+            messagebox.showerror("错误", f"打开历史文件夹失败: {e}")
+    
+    def play_audio_file(self, file_path):
+        """播放音频文件"""
+        try:
+            if not os.path.exists(file_path):
+                messagebox.showerror("错误", "文件不存在")
+                return
+            
+            # 使用系统默认程序播放音频文件
+            import subprocess
+            import platform
+            
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(file_path)
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", file_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", file_path])
+            
+            filename = os.path.basename(file_path)
+            self.log_info(f"🎵 正在播放: {filename}")
+            
+        except Exception as e:
+            self.log_error(f"播放音频文件失败: {e}")
+            messagebox.showerror("错误", f"播放音频文件失败: {e}")
+    
+    def open_folder(self, folder_path):
+        """打开文件夹"""
+        try:
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path, exist_ok=True)
+            
+            import subprocess
+            import platform
+            
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(folder_path)
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", folder_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", folder_path])
+            
+            self.log_info(f"📂 已打开文件夹: {folder_path}")
+            
+        except Exception as e:
+            self.log_error(f"打开文件夹失败: {e}")
+            messagebox.showerror("错误", f"打开文件夹失败: {e}")
     
     def __del__(self):
         if hasattr(self, 'audio'):
