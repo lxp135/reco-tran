@@ -977,17 +977,27 @@ class AudioTranscriber:
             # 设置麦克风流
             if self.microphone_enabled and self.microphone_device_index is not None:
                 try:
+                    # 获取麦克风设备的原始参数
+                    mic_device_info = self.audio.get_device_info_by_index(self.microphone_device_index)
+                    mic_max_channels = int(mic_device_info['maxInputChannels'])
+                    mic_default_rate = int(mic_device_info['defaultSampleRate'])
+                    
+                    # 使用设备原始参数创建音频流
                     self.microphone_stream = self.audio.open(
                         format=self.format,
-                        channels=self.channels,
-                        rate=self.rate,
+                        channels=min(mic_max_channels, 2),  # 最多使用2个通道
+                        rate=mic_default_rate,  # 使用设备原始采样率
                         input=True,
                         input_device_index=self.microphone_device_index,
                         frames_per_buffer=self.chunk
                     )
-                    mic_device_info = self.audio.get_device_info_by_index(self.microphone_device_index)
+                    
+                    # 存储麦克风的实际配置信息
+                    self.microphone_channels = min(mic_max_channels, 2)
+                    self.microphone_rate = mic_default_rate
+                    
                     streams_info.append(f"麦克风: {mic_device_info['name']}")
-                    self.log_info(f"麦克风流已启动: {mic_device_info['name']}")
+                    self.log_info(f"麦克风流已启动: {mic_device_info['name']} (通道: {self.microphone_channels}, 采样率: {self.microphone_rate}Hz)")
                 except Exception as e:
                     self.log_error(f"无法启动麦克风流: {e}")
                     self.microphone_stream = None
@@ -1006,39 +1016,44 @@ class AudioTranscriber:
                     except:
                         pass
                     
+                    # 获取系统音频设备的原始参数
+                    sys_device_info = self.audio.get_device_info_by_index(self.system_audio_device_index)
+                    sys_max_channels = int(sys_device_info['maxInputChannels'])
+                    sys_default_rate = int(sys_device_info['defaultSampleRate'])
+                    
                     # 根据设备类型创建音频流
                     if is_loopback_device:
-                        # WASAPI Loopback设备 - 使用与测试程序相同的配置
-                        device_info = self.audio.get_device_info_by_index(self.system_audio_device_index)
-                        max_channels = int(device_info['maxInputChannels'])
-                        default_rate = int(device_info['defaultSampleRate'])
-                        
-                        # 直接使用设备的最大通道数和默认采样率（与测试程序一致）
+                        # WASAPI Loopback设备 - 使用设备原始参数
                         self.system_audio_stream = self.audio.open(
                             format=self.format,
-                            channels=max_channels,  # 使用设备的实际通道数
-                            rate=default_rate,      # 使用设备的默认采样率
+                            channels=sys_max_channels,  # 使用设备的实际通道数
+                            rate=sys_default_rate,      # 使用设备的默认采样率
                             input=True,
                             input_device_index=self.system_audio_device_index,
                             frames_per_buffer=self.chunk
                         )
                         
                         # 存储实际使用的配置信息
-                        self.system_audio_channels = max_channels
-                        self.system_audio_rate = default_rate
+                        self.system_audio_channels = sys_max_channels
+                        self.system_audio_rate = sys_default_rate
                         
-                        self.log_info(f"WASAPI Loopback音频流已启动 (通道: {max_channels}, 采样率: {default_rate}Hz)")
+                        self.log_info(f"WASAPI Loopback音频流已启动 (通道: {sys_max_channels}, 采样率: {sys_default_rate}Hz)")
                     else:
-                        # 传统音频设备（如立体声混音）
+                        # 传统音频设备 - 也使用设备原始参数
                         self.system_audio_stream = self.audio.open(
                             format=self.format,
-                            channels=self.channels,
-                            rate=self.rate,
+                            channels=sys_max_channels,
+                            rate=sys_default_rate,
                             input=True,
                             input_device_index=self.system_audio_device_index,
                             frames_per_buffer=self.chunk
                         )
-                        self.log_info(f"传统系统音频流已启动")
+                        
+                        # 存储实际使用的配置信息
+                        self.system_audio_channels = sys_max_channels
+                        self.system_audio_rate = sys_default_rate
+                        
+                        self.log_info(f"传统系统音频流已启动 (通道: {sys_max_channels}, 采样率: {sys_default_rate}Hz)")
                     
                     sys_device_info = self.audio.get_device_info_by_index(self.system_audio_device_index)
                     device_type = "WASAPI Loopback" if is_loopback_device else "传统设备"
@@ -1158,31 +1173,7 @@ class AudioTranscriber:
                                 
                                 self.log_debug(f"系统音频数据处理: 原始长度={original_len}, 最终长度={final_len}, chunk={self.chunk}, 通道数={channels}")
                             
-                            # 重采样处理：将系统音频从设备采样率重采样到16kHz
-                            sys_rate = getattr(self, 'system_audio_rate', self.rate)
-                            if sys_rate != self.rate:
-                                # 需要重采样
-                                sys_array_float = sys_array.astype(np.float32)
-                                # 计算重采样比例
-                                resample_ratio = self.rate / sys_rate
-                                # 使用scipy进行重采样
-                                resampled_length = int(len(sys_array_float) * resample_ratio)
-                                sys_array_resampled = signal.resample(sys_array_float, resampled_length)
-                                # 确保长度匹配chunk大小
-                                if len(sys_array_resampled) > self.chunk:
-                                    sys_array = sys_array_resampled[:self.chunk].astype(np.int16)
-                                elif len(sys_array_resampled) < self.chunk:
-                                    # 填充到chunk大小
-                                    padding = np.zeros(self.chunk - len(sys_array_resampled), dtype=np.float32)
-                                    sys_array_padded = np.concatenate([sys_array_resampled, padding])
-                                    sys_array = sys_array_padded.astype(np.int16)
-                                else:
-                                    sys_array = sys_array_resampled.astype(np.int16)
-                                
-                                # 添加重采样调试信息（仅第一次）
-                                if not hasattr(self, '_resample_debug_logged'):
-                                    self._resample_debug_logged = True
-                                    self.log_info(f"系统音频重采样: {sys_rate}Hz -> {self.rate}Hz (比例: {resample_ratio:.3f})")
+                            # 保持原始音频数据，不进行重采样处理
                             
                             # 增益控制已移除
                             
@@ -1504,26 +1495,32 @@ class AudioTranscriber:
                 saved_files.append(("混合音频", filename, self.current_audio_file))
                 self.frames.clear()
             
-            # 保存独立的麦克风音频文件
+            # 保存独立的麦克风音频文件 - 使用麦克风设备原始参数
             if hasattr(self, 'microphone_frames') and self.microphone_frames:
                 wf_mic = wave.open(mic_audio_file, 'wb')
-                wf_mic.setnchannels(self.channels)
+                mic_channels = getattr(self, 'microphone_channels', self.channels)
+                mic_rate = getattr(self, 'microphone_rate', self.rate)
+                wf_mic.setnchannels(mic_channels)
                 wf_mic.setsampwidth(self.audio.get_sample_size(self.format))
-                wf_mic.setframerate(self.rate)
+                wf_mic.setframerate(mic_rate)
                 wf_mic.writeframes(b''.join(self.microphone_frames))
                 wf_mic.close()
                 saved_files.append(("麦克风", mic_filename, mic_audio_file))
+                self.log_info(f"麦克风音频保存参数: 通道数={mic_channels}, 采样率={mic_rate}Hz")
                 self.microphone_frames.clear()
             
-            # 保存独立的系统音频文件
+            # 保存独立的系统音频文件 - 使用系统音频设备原始参数
             if hasattr(self, 'system_audio_frames') and self.system_audio_frames:
                 wf_sys = wave.open(sys_audio_file, 'wb')
-                wf_sys.setnchannels(self.channels)
+                sys_channels = getattr(self, 'system_audio_channels', self.channels)
+                sys_rate = getattr(self, 'system_audio_rate', self.rate)
+                wf_sys.setnchannels(sys_channels)
                 wf_sys.setsampwidth(self.audio.get_sample_size(self.format))
-                wf_sys.setframerate(self.rate)
+                wf_sys.setframerate(sys_rate)
                 wf_sys.writeframes(b''.join(self.system_audio_frames))
                 wf_sys.close()
                 saved_files.append(("系统音频", sys_filename, sys_audio_file))
+                self.log_info(f"系统音频保存参数: 通道数={sys_channels}, 采样率={sys_rate}Hz")
                 self.system_audio_frames.clear()
             
             # 如果同时有麦克风和系统音频，创建合并文件
@@ -1601,13 +1598,37 @@ class AudioTranscriber:
         messagebox.showerror("错误", f"停止录音时出错: {error_msg}")
             
     def merge_audio_files(self, mic_file, sys_file, output_file, timestamp):
-        """合并麦克风和系统音频文件"""
+        """合并麦克风和系统音频文件，处理不同采样率"""
         try:
             self.log_info("开始合并音频文件...")
             
             # 使用pydub加载音频文件
             mic_audio = AudioSegment.from_wav(mic_file)
             sys_audio = AudioSegment.from_wav(sys_file)
+            
+            # 记录原始音频参数
+            self.log_info(f"麦克风音频: 采样率={mic_audio.frame_rate}Hz, 通道数={mic_audio.channels}, 时长={len(mic_audio)}ms")
+            self.log_info(f"系统音频: 采样率={sys_audio.frame_rate}Hz, 通道数={sys_audio.channels}, 时长={len(sys_audio)}ms")
+            
+            # 处理不同采样率 - 统一到较高的采样率
+            target_sample_rate = max(mic_audio.frame_rate, sys_audio.frame_rate)
+            
+            if mic_audio.frame_rate != target_sample_rate:
+                self.log_info(f"重采样麦克风音频: {mic_audio.frame_rate}Hz -> {target_sample_rate}Hz")
+                mic_audio = mic_audio.set_frame_rate(target_sample_rate)
+                
+            if sys_audio.frame_rate != target_sample_rate:
+                self.log_info(f"重采样系统音频: {sys_audio.frame_rate}Hz -> {target_sample_rate}Hz")
+                sys_audio = sys_audio.set_frame_rate(target_sample_rate)
+            
+            # 处理不同通道数 - 统一为立体声
+            if mic_audio.channels == 1:
+                mic_audio = mic_audio.set_channels(2)
+            if sys_audio.channels == 1:
+                sys_audio = sys_audio.set_channels(2)
+            elif sys_audio.channels > 2:
+                # 如果系统音频是多声道，转换为立体声
+                sys_audio = sys_audio.set_channels(2)
             
             # 确保两个音频文件长度一致
             min_length = min(len(mic_audio), len(sys_audio))
@@ -1620,7 +1641,7 @@ class AudioTranscriber:
             # 导出合并后的音频
             merged_audio.export(output_file, format="wav")
             
-            self.log_info(f"音频合并完成: {os.path.basename(output_file)}")
+            self.log_info(f"音频合并完成: {os.path.basename(output_file)}, 最终采样率={target_sample_rate}Hz, 时长={min_length}ms")
             
         except Exception as e:
             self.log_error(f"音频合并失败: {e}")
