@@ -297,7 +297,7 @@ class AudioTranscriber:
         ttk.Button(history_control_frame, text="清理", command=self.clean_history_files, width=6).grid(row=0, column=1)
         
         # 历史文件列表
-        self.history_files_listbox = tk.Listbox(history_files_frame, height=10, font=("Arial", 8), width=30)
+        self.history_files_listbox = tk.Listbox(history_files_frame, height=20, font=("Arial", 8), width=30)
         history_files_scrollbar = ttk.Scrollbar(history_files_frame, orient="vertical", command=self.history_files_listbox.yview)
         self.history_files_listbox.configure(yscrollcommand=history_files_scrollbar.set)
         self.history_files_listbox.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
