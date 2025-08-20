@@ -140,9 +140,9 @@ class AudioTranscriber:
         # 配置网格权重
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=1)  # 音频文件列
-        main_frame.columnconfigure(1, weight=1)  # 转写结果列
-        main_frame.columnconfigure(2, weight=1)  # 日志列
+        main_frame.columnconfigure(0, weight=1, minsize=300)  # 音频文件列
+        main_frame.columnconfigure(1, weight=1, minsize=300)  # 转写结果列
+        main_frame.columnconfigure(2, weight=1, minsize=300)  # 日志列
         main_frame.rowconfigure(2, weight=1)
         
         # 录音控制区域
@@ -222,14 +222,14 @@ class AudioTranscriber:
         # 音频文件管理区域（左列）
         audio_files_frame = ttk.LabelFrame(main_frame, text="音频文件管理", padding="6")
         audio_files_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 3))
-        audio_files_frame.columnconfigure(0, weight=1)
+        audio_files_frame.columnconfigure(0, weight=1, minsize=300)
         audio_files_frame.rowconfigure(1, weight=1)
         audio_files_frame.rowconfigure(3, weight=1)
         
         # 转写结果区域（中列）- 拆分为两个子区域
-        result_frame = ttk.Frame(main_frame)
+        result_frame = ttk.LabelFrame(main_frame, text="转写结果", padding="6")
         result_frame.grid(row=2, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 3))
-        result_frame.columnconfigure(0, weight=1)
+        result_frame.columnconfigure(0, weight=1, minsize=300)
         result_frame.rowconfigure(0, weight=1)
         result_frame.rowconfigure(1, weight=1)
         
@@ -267,7 +267,7 @@ class AudioTranscriber:
         # 日志区域（右列）
         log_frame = ttk.LabelFrame(main_frame, text="执行日志", padding="6")
         log_frame.grid(row=2, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 0))
-        log_frame.columnconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1, minsize=300)
         log_frame.rowconfigure(1, weight=1)
         
         # 日志控制按钮
