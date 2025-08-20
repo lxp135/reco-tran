@@ -73,7 +73,6 @@ class AudioTranscriber:
         # 麦克风控制
         self.microphone_enabled = True  # 麦克风启用状态
         self.system_audio_enabled = True  # 系统音频启用状态
-        self.audio_gain = 1.0  # 音频增益倍数，默认为1.0（无增益）
         
         # 音频泄漏检测相关变量
         self.mic_audio_samples = []
@@ -148,7 +147,7 @@ class AudioTranscriber:
         # 录音控制区域
         control_frame = ttk.LabelFrame(main_frame, text="录音控制", padding="8")
         control_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
-        control_frame.columnconfigure(8, weight=1)
+        control_frame.columnconfigure(5, weight=1)
         
         # 第一行控件
         # 录音按钮
@@ -178,14 +177,7 @@ class AudioTranscriber:
         self.system_audio_checkbox = ttk.Checkbutton(control_frame, text="系统音频", variable=self.system_audio_var, command=self.toggle_system_audio)
         self.system_audio_checkbox.grid(row=0, column=5, padx=(0, 8))
         
-        # 音频增益控制
-        ttk.Label(control_frame, text="增益:").grid(row=0, column=6, padx=(0, 3), sticky=tk.W)
-        self.gain_var = tk.DoubleVar(value=1.0)
-        self.gain_scale = ttk.Scale(control_frame, from_=0.1, to=5.0, variable=self.gain_var, 
-                                   orient=tk.HORIZONTAL, length=60, command=self.on_gain_change)
-        self.gain_scale.grid(row=0, column=7, padx=(0, 3))
-        self.gain_label = ttk.Label(control_frame, text="1.0x")
-        self.gain_label.grid(row=0, column=8, padx=(0, 8), sticky=tk.W)
+        # 增益控制已移除
         
         # 状态信息区域（第二行）
         status_frame = ttk.Frame(control_frame)
@@ -866,12 +858,7 @@ class AudioTranscriber:
             else:
                 self.log_warning("系统音频已禁用，录音将继续但不会接收系统音频")
     
-    def on_gain_change(self, value):
-        """音频增益变化回调"""
-        self.audio_gain = float(value)
-        self.gain_label.config(text=f"{self.audio_gain:.1f}x")
-        if self.recording:
-            self.log_info(f"音频增益已调整为 {self.audio_gain:.1f}x")
+    # 增益控制方法已移除
             
     def toggle_recording(self):
         if not self.recording:
@@ -1098,10 +1085,6 @@ class AudioTranscriber:
                         try:
                             mic_data = self.microphone_stream.read(self.chunk, exception_on_overflow=False)
                             mic_array = np.frombuffer(mic_data, dtype=np.int16)
-                            # 应用增益
-                            if self.audio_gain != 1.0:
-                                mic_array = mic_array.astype(np.float32) * self.audio_gain
-                                mic_array = np.clip(mic_array, -32768, 32767).astype(np.int16)
                             
                             # 实时检测麦克风音频泄漏
                             self.analyze_microphone_audio_leakage(mic_array)
@@ -1201,10 +1184,7 @@ class AudioTranscriber:
                                     self._resample_debug_logged = True
                                     self.log_info(f"系统音频重采样: {sys_rate}Hz -> {self.rate}Hz (比例: {resample_ratio:.3f})")
                             
-                            # 应用增益
-                            if self.audio_gain != 1.0:
-                                sys_array = sys_array.astype(np.float32) * self.audio_gain
-                                sys_array = np.clip(sys_array, -32768, 32767).astype(np.int16)
+                            # 增益控制已移除
                             
                             # 存储独立的系统音频数据（重采样后的16kHz数据）
                             self.system_audio_frames.append(sys_array.tobytes())
@@ -1222,9 +1202,6 @@ class AudioTranscriber:
                             data = self.stream.read(self.chunk, exception_on_overflow=False)
                             if self.microphone_enabled:  # 只有在麦克风启用时才使用默认设备数据
                                 default_array = np.frombuffer(data, dtype=np.int16)
-                                if self.audio_gain != 1.0:
-                                    default_array = default_array.astype(np.float32) * self.audio_gain
-                                    default_array = np.clip(default_array, -32768, 32767).astype(np.int16)
                                 
                                 # 如果没有独立的麦克风流，将默认设备数据作为麦克风数据
                                 if self.microphone_stream is None:
@@ -1919,8 +1896,10 @@ class AudioTranscriber:
                         
                         if text and text.strip():  # 只有当识别到文本时才更新
                             timestamp = datetime.now().strftime("%H:%M:%S")
-                            formatted_text = f"[{timestamp}] {text}\n"
-                            self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
+                            # 处理每句话换行
+                            sentences = text.replace('。', '。\n').replace('！', '！\n').replace('？', '？\n')
+                            formatted_text = f"[{timestamp}] {sentences}\n"
+                            self.root.after(0, lambda t=formatted_text: self.append_mic_text(t))
                             self.log_info(f"实时转写成功 #{transcription_count}: {text[:50]}{'...' if len(text) > 50 else ''}")
                             
                     except Exception as e:
@@ -2005,8 +1984,10 @@ class AudioTranscriber:
                         
                         if text and text.strip():
                             timestamp = datetime.now().strftime("%H:%M:%S")
-                            formatted_text = f"[{timestamp}][麦克风] {text}\n"
-                            self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
+                            # 处理每句话换行
+                            sentences = text.replace('。', '。\n').replace('！', '！\n').replace('？', '？\n')
+                            formatted_text = f"[{timestamp}] {sentences}\n"
+                            self.root.after(0, lambda t=formatted_text: self.append_mic_text(t))
                             self.log_info(f"麦克风转写成功 #{transcription_count}: {text[:50]}{'...' if len(text) > 50 else ''}")
                             
                     except Exception as e:
@@ -2088,8 +2069,10 @@ class AudioTranscriber:
                         
                         if text and text.strip():
                             timestamp = datetime.now().strftime("%H:%M:%S")
-                            formatted_text = f"[{timestamp}][系统音频] {text}\n"
-                            self.root.after(0, lambda t=formatted_text: self.append_realtime_text(t))
+                            # 处理每句话换行
+                            sentences = text.replace('。', '。\n').replace('！', '！\n').replace('？', '？\n')
+                            formatted_text = f"[{timestamp}] {sentences}\n"
+                            self.root.after(0, lambda t=formatted_text: self.append_sys_text(t))
                             self.log_info(f"系统音频转写成功 #{transcription_count}: {text[:50]}{'...' if len(text) > 50 else ''}")
                             
                     except Exception as e:
@@ -2136,6 +2119,7 @@ class AudioTranscriber:
         if filtered_text.strip():
             self.mic_text_area.insert(tk.END, filtered_text)
             self.mic_text_area.see(tk.END)  # 自动滚动到底部
+            self.save_button.config(state="normal")
     
     def append_sys_text(self, text):
         """向系统音频文本区域追加转写结果"""
@@ -2143,6 +2127,7 @@ class AudioTranscriber:
         if filtered_text.strip():
             self.sys_text_area.insert(tk.END, filtered_text)
             self.sys_text_area.see(tk.END)  # 自动滚动到底部
+            self.save_button.config(state="normal")
     
     def on_engine_change(self, event=None):
         """引擎切换事件处理"""
