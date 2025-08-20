@@ -43,7 +43,7 @@ class AudioTranscriber:
     def __init__(self, root):
         self.root = root
         self.root.title("录音转写工具")
-        self.root.geometry("1400x700")
+        self.root.geometry("1200x650")
         self.root.resizable(True, True)
         
         # ffmpeg会自动从系统PATH中查找，无需手动设置路径
@@ -150,68 +150,74 @@ class AudioTranscriber:
         title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
         
         # 录音控制区域
-        control_frame = ttk.LabelFrame(main_frame, text="录音控制", padding="10")
-        control_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
-        control_frame.columnconfigure(2, weight=1)
+        control_frame = ttk.LabelFrame(main_frame, text="录音控制", padding="8")
+        control_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
+        control_frame.columnconfigure(8, weight=1)
         
+        # 第一行控件
         # 录音按钮
         self.record_button = ttk.Button(control_frame, text="开始录音", command=self.toggle_recording)
-        self.record_button.grid(row=0, column=0, padx=(0, 10))
+        self.record_button.grid(row=0, column=0, padx=(0, 8))
         
         # 引擎选择
-        ttk.Label(control_frame, text="识别引擎:").grid(row=0, column=1, padx=(0, 5), sticky=tk.W)
+        ttk.Label(control_frame, text="引擎:").grid(row=0, column=1, padx=(0, 3), sticky=tk.W)
         self.engine_var = tk.StringVar(value="google")
         self.engine_combo = ttk.Combobox(control_frame, textvariable=self.engine_var, 
-                                        values=["google", "whisper"], state="readonly", width=10)
-        self.engine_combo.grid(row=0, column=2, padx=(0, 10))
+                                        values=["google", "whisper"], state="readonly", width=8)
+        self.engine_combo.grid(row=0, column=2, padx=(0, 8))
         self.engine_combo.bind("<<ComboboxSelected>>", self.on_engine_change)
         
         # 实时转写开关
         self.realtime_var = tk.BooleanVar(value=True)
         self.realtime_checkbox = ttk.Checkbutton(control_frame, text="实时转写", variable=self.realtime_var)
-        self.realtime_checkbox.grid(row=0, column=3, padx=(0, 10))
+        self.realtime_checkbox.grid(row=0, column=3, padx=(0, 8))
         
         # 麦克风开关
         self.microphone_var = tk.BooleanVar(value=self.microphone_enabled)
         self.microphone_checkbox = ttk.Checkbutton(control_frame, text="麦克风", variable=self.microphone_var, command=self.toggle_microphone)
-        self.microphone_checkbox.grid(row=0, column=4, padx=(0, 10))
+        self.microphone_checkbox.grid(row=0, column=4, padx=(0, 8))
         
         # 系统音频开关
         self.system_audio_var = tk.BooleanVar(value=self.system_audio_enabled)
         self.system_audio_checkbox = ttk.Checkbutton(control_frame, text="系统音频", variable=self.system_audio_var, command=self.toggle_system_audio)
-        self.system_audio_checkbox.grid(row=0, column=5, padx=(0, 10))
+        self.system_audio_checkbox.grid(row=0, column=5, padx=(0, 8))
         
         # 音频增益控制
-        ttk.Label(control_frame, text="增益:").grid(row=0, column=6, padx=(0, 5), sticky=tk.W)
+        ttk.Label(control_frame, text="增益:").grid(row=0, column=6, padx=(0, 3), sticky=tk.W)
         self.gain_var = tk.DoubleVar(value=1.0)
         self.gain_scale = ttk.Scale(control_frame, from_=0.1, to=5.0, variable=self.gain_var, 
-                                   orient=tk.HORIZONTAL, length=80, command=self.on_gain_change)
-        self.gain_scale.grid(row=0, column=7, padx=(0, 5))
+                                   orient=tk.HORIZONTAL, length=60, command=self.on_gain_change)
+        self.gain_scale.grid(row=0, column=7, padx=(0, 3))
         self.gain_label = ttk.Label(control_frame, text="1.0x")
-        self.gain_label.grid(row=0, column=8, padx=(0, 10))
+        self.gain_label.grid(row=0, column=8, padx=(0, 8), sticky=tk.W)
+        
+        # 状态信息区域（第二行）
+        status_frame = ttk.Frame(control_frame)
+        status_frame.grid(row=1, column=0, columnspan=9, sticky=(tk.W, tk.E), pady=(5, 0))
+        status_frame.columnconfigure(1, weight=1)
         
         # 录音状态标签
-        self.status_label = ttk.Label(control_frame, text="准备就绪")
-        self.status_label.grid(row=0, column=9, sticky=tk.W)
+        self.status_label = ttk.Label(status_frame, text="准备就绪", font=("Arial", 9))
+        self.status_label.grid(row=0, column=0, sticky=tk.W)
         
         # 录音时长标签
-        self.duration_label = ttk.Label(control_frame, text="时长: 00:00")
-        self.duration_label.grid(row=0, column=9)
+        self.duration_label = ttk.Label(status_frame, text="时长: 00:00", font=("Arial", 9))
+        self.duration_label.grid(row=0, column=2, sticky=tk.E)
         
         # 文件操作区域
-        file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="10")
-        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="8")
+        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
         
         # 打开音频文件按钮
-        ttk.Button(file_frame, text="打开音频文件", command=self.open_audio_file).grid(row=0, column=0, padx=(0, 10))
+        ttk.Button(file_frame, text="打开音频文件", command=self.open_audio_file).grid(row=0, column=0, padx=(0, 8))
         
         # 转写按钮
         self.transcribe_button = ttk.Button(file_frame, text="开始转写", command=self.transcribe_audio, state="disabled")
-        self.transcribe_button.grid(row=0, column=1, padx=(0, 10))
+        self.transcribe_button.grid(row=0, column=1, padx=(0, 8))
         
         # 保存文本按钮
         self.save_button = ttk.Button(file_frame, text="保存文本", command=self.save_text, state="disabled")
-        self.save_button.grid(row=0, column=2, padx=(0, 10))
+        self.save_button.grid(row=0, column=2, padx=(0, 8))
         
         # 清空文本按钮
         ttk.Button(file_frame, text="清空文本", command=self.clear_text).grid(row=0, column=3)
@@ -219,51 +225,51 @@ class AudioTranscriber:
         # 三列主内容区域
         # 转写结果区域（左列）- 拆分为两个子区域
         result_frame = ttk.Frame(main_frame)
-        result_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
+        result_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 3))
         result_frame.columnconfigure(0, weight=1)
         result_frame.rowconfigure(0, weight=1)
         result_frame.rowconfigure(1, weight=1)
         
         # 麦克风转写结果区域（上半部分）
-        mic_frame = ttk.LabelFrame(result_frame, text="麦克风转写", padding="5")
-        mic_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+        mic_frame = ttk.LabelFrame(result_frame, text="麦克风转写", padding="3")
+        mic_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3))
         mic_frame.columnconfigure(0, weight=1)
         mic_frame.rowconfigure(1, weight=1)
         
         # 麦克风转写状态
-        self.mic_status = ttk.Label(mic_frame, text="麦克风转写: 未启动", font=("Arial", 9))
-        self.mic_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 3))
+        self.mic_status = ttk.Label(mic_frame, text="麦克风转写: 未启动", font=("Arial", 8))
+        self.mic_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 2))
         
         # 麦克风文本显示区域
-        self.mic_text_area = scrolledtext.ScrolledText(mic_frame, wrap=tk.WORD, height=10)
+        self.mic_text_area = scrolledtext.ScrolledText(mic_frame, wrap=tk.WORD, height=8, font=("Arial", 9))
         self.mic_text_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # 系统音频转写结果区域（下半部分）
-        sys_frame = ttk.LabelFrame(result_frame, text="系统音频转写", padding="5")
+        sys_frame = ttk.LabelFrame(result_frame, text="系统音频转写", padding="3")
         sys_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         sys_frame.columnconfigure(0, weight=1)
         sys_frame.rowconfigure(1, weight=1)
         
         # 系统音频转写状态
-        self.sys_status = ttk.Label(sys_frame, text="系统音频转写: 未启动", font=("Arial", 9))
-        self.sys_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 3))
+        self.sys_status = ttk.Label(sys_frame, text="系统音频转写: 未启动", font=("Arial", 8))
+        self.sys_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 2))
         
         # 系统音频文本显示区域
-        self.sys_text_area = scrolledtext.ScrolledText(sys_frame, wrap=tk.WORD, height=10)
+        self.sys_text_area = scrolledtext.ScrolledText(sys_frame, wrap=tk.WORD, height=8, font=("Arial", 9))
         self.sys_text_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # 保持原有的text_area用于兼容性（合并显示）
         self.text_area = self.mic_text_area  # 默认指向麦克风区域
         
         # 日志区域（中列）
-        log_frame = ttk.LabelFrame(main_frame, text="执行日志", padding="10")
-        log_frame.grid(row=3, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 5))
+        log_frame = ttk.LabelFrame(main_frame, text="执行日志", padding="6")
+        log_frame.grid(row=3, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 3))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
         
         # 日志控制按钮
         log_control_frame = ttk.Frame(log_frame)
-        log_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        log_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 3))
         
         ttk.Button(log_control_frame, text="清空日志", command=self.clear_log).grid(row=0, column=0, padx=(0, 5))
         
@@ -271,25 +277,25 @@ class AudioTranscriber:
         ttk.Checkbutton(log_control_frame, text="自动滚动", variable=self.auto_scroll_var).grid(row=0, column=1)
         
         # 日志显示区域
-        self.log_area = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=20, font=("Consolas", 9))
+        self.log_area = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=18, font=("Consolas", 8))
         self.log_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_area.config(state=tk.DISABLED)  # 设置为只读
         
         # 音频文件管理区域（右列）
-        audio_files_frame = ttk.LabelFrame(main_frame, text="音频文件管理", padding="10")
-        audio_files_frame.grid(row=3, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(5, 0))
+        audio_files_frame = ttk.LabelFrame(main_frame, text="音频文件管理", padding="6")
+        audio_files_frame.grid(row=3, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 0))
         audio_files_frame.columnconfigure(0, weight=1)
         audio_files_frame.rowconfigure(1, weight=1)
         audio_files_frame.rowconfigure(3, weight=1)
         
         # 本次录音文件区域
-        current_files_frame = ttk.LabelFrame(audio_files_frame, text="本次录音文件", padding="5")
-        current_files_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+        current_files_frame = ttk.LabelFrame(audio_files_frame, text="本次录音文件", padding="3")
+        current_files_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3))
         current_files_frame.columnconfigure(0, weight=1)
         current_files_frame.rowconfigure(0, weight=1)
         
         # 本次录音文件列表
-        self.current_files_listbox = tk.Listbox(current_files_frame, height=6, font=("Arial", 9))
+        self.current_files_listbox = tk.Listbox(current_files_frame, height=4, font=("Arial", 8))
         current_files_scrollbar = ttk.Scrollbar(current_files_frame, orient="vertical", command=self.current_files_listbox.yview)
         self.current_files_listbox.configure(yscrollcommand=current_files_scrollbar.set)
         self.current_files_listbox.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -297,28 +303,28 @@ class AudioTranscriber:
         
         # 本次录音文件操作按钮
         current_files_buttons = ttk.Frame(current_files_frame)
-        current_files_buttons.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
-        ttk.Button(current_files_buttons, text="播放", command=self.play_current_file, width=8).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(current_files_buttons, text="打开文件夹", command=self.open_current_folder, width=10).grid(row=0, column=1, padx=(0, 5))
-        ttk.Button(current_files_buttons, text="清空", command=self.clear_current_files, width=8).grid(row=0, column=2)
+        current_files_buttons.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(3, 0))
+        ttk.Button(current_files_buttons, text="播放", command=self.play_current_file, width=6).grid(row=0, column=0, padx=(0, 3))
+        ttk.Button(current_files_buttons, text="文件夹", command=self.open_current_folder, width=6).grid(row=0, column=1, padx=(0, 3))
+        ttk.Button(current_files_buttons, text="清空", command=self.clear_current_files, width=6).grid(row=0, column=2)
         
         # 分隔线
-        ttk.Separator(audio_files_frame, orient='horizontal').grid(row=2, column=0, sticky=(tk.W, tk.E), pady=5)
+        ttk.Separator(audio_files_frame, orient='horizontal').grid(row=2, column=0, sticky=(tk.W, tk.E), pady=3)
         
         # 历史文件区域
-        history_files_frame = ttk.LabelFrame(audio_files_frame, text="历史文件", padding="5")
+        history_files_frame = ttk.LabelFrame(audio_files_frame, text="历史文件", padding="3")
         history_files_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         history_files_frame.columnconfigure(0, weight=1)
         history_files_frame.rowconfigure(1, weight=1)
         
         # 历史文件控制按钮
         history_control_frame = ttk.Frame(history_files_frame)
-        history_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
-        ttk.Button(history_control_frame, text="刷新", command=self.refresh_history_files, width=8).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(history_control_frame, text="清理", command=self.clean_history_files, width=8).grid(row=0, column=1)
+        history_control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 3))
+        ttk.Button(history_control_frame, text="刷新", command=self.refresh_history_files, width=6).grid(row=0, column=0, padx=(0, 3))
+        ttk.Button(history_control_frame, text="清理", command=self.clean_history_files, width=6).grid(row=0, column=1)
         
         # 历史文件列表
-        self.history_files_listbox = tk.Listbox(history_files_frame, height=12, font=("Arial", 9))
+        self.history_files_listbox = tk.Listbox(history_files_frame, height=10, font=("Arial", 8))
         history_files_scrollbar = ttk.Scrollbar(history_files_frame, orient="vertical", command=self.history_files_listbox.yview)
         self.history_files_listbox.configure(yscrollcommand=history_files_scrollbar.set)
         self.history_files_listbox.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -326,10 +332,10 @@ class AudioTranscriber:
         
         # 历史文件操作按钮
         history_files_buttons = ttk.Frame(history_files_frame)
-        history_files_buttons.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
-        ttk.Button(history_files_buttons, text="播放", command=self.play_history_file, width=8).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(history_files_buttons, text="删除", command=self.delete_history_file, width=8).grid(row=0, column=1, padx=(0, 5))
-        ttk.Button(history_files_buttons, text="打开文件夹", command=self.open_history_folder, width=10).grid(row=0, column=2)
+        history_files_buttons.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(3, 0))
+        ttk.Button(history_files_buttons, text="播放", command=self.play_history_file, width=6).grid(row=0, column=0, padx=(0, 3))
+        ttk.Button(history_files_buttons, text="删除", command=self.delete_history_file, width=6).grid(row=0, column=1, padx=(0, 3))
+        ttk.Button(history_files_buttons, text="文件夹", command=self.open_history_folder, width=6).grid(row=0, column=2)
         
         # 初始化音频文件列表
         self.current_audio_files = []  # 存储本次录音的文件路径
