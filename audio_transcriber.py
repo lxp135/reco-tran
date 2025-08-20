@@ -214,19 +214,43 @@ class AudioTranscriber:
         ttk.Button(file_frame, text="清空文本", command=self.clear_text).grid(row=0, column=3)
         
         # 三列主内容区域
-        # 转写结果区域（左列）
-        result_frame = ttk.LabelFrame(main_frame, text="转写结果", padding="10")
+        # 转写结果区域（左列）- 拆分为两个子区域
+        result_frame = ttk.Frame(main_frame)
         result_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
         result_frame.columnconfigure(0, weight=1)
+        result_frame.rowconfigure(0, weight=1)
         result_frame.rowconfigure(1, weight=1)
         
-        # 实时转写状态
-        self.realtime_status = ttk.Label(result_frame, text="实时转写: 未启动", font=("Arial", 9))
-        self.realtime_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        # 麦克风转写结果区域（上半部分）
+        mic_frame = ttk.LabelFrame(result_frame, text="麦克风转写", padding="5")
+        mic_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+        mic_frame.columnconfigure(0, weight=1)
+        mic_frame.rowconfigure(1, weight=1)
         
-        # 文本显示区域
-        self.text_area = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, height=20)
-        self.text_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        # 麦克风转写状态
+        self.mic_status = ttk.Label(mic_frame, text="麦克风转写: 未启动", font=("Arial", 9))
+        self.mic_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 3))
+        
+        # 麦克风文本显示区域
+        self.mic_text_area = scrolledtext.ScrolledText(mic_frame, wrap=tk.WORD, height=10)
+        self.mic_text_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 系统音频转写结果区域（下半部分）
+        sys_frame = ttk.LabelFrame(result_frame, text="系统音频转写", padding="5")
+        sys_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        sys_frame.columnconfigure(0, weight=1)
+        sys_frame.rowconfigure(1, weight=1)
+        
+        # 系统音频转写状态
+        self.sys_status = ttk.Label(sys_frame, text="系统音频转写: 未启动", font=("Arial", 9))
+        self.sys_status.grid(row=0, column=0, sticky=tk.W, pady=(0, 3))
+        
+        # 系统音频文本显示区域
+        self.sys_text_area = scrolledtext.ScrolledText(sys_frame, wrap=tk.WORD, height=10)
+        self.sys_text_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 保持原有的text_area用于兼容性（合并显示）
+        self.text_area = self.mic_text_area  # 默认指向麦克风区域
         
         # 日志区域（中列）
         log_frame = ttk.LabelFrame(main_frame, text="执行日志", padding="10")
@@ -877,26 +901,32 @@ class AudioTranscriber:
             # 检查是否启用实时转写
             self.real_time_transcription = self.realtime_var.get()
             if self.real_time_transcription:
-                self.realtime_status.config(text="实时转写: 启动中...")
                 # 启动独立的转写线程
                 if self.microphone_enabled:
+                    self.mic_status.config(text="麦克风转写: 启动中...")
                     self.microphone_transcription_thread = threading.Thread(target=self.microphone_transcribe)
                     self.microphone_transcription_thread.daemon = True
                     self.microphone_transcription_thread.start()
                     self.log_info(f"麦克风实时转写已启动，使用引擎: {self.engine_type}")
+                else:
+                    self.mic_status.config(text="麦克风转写: 未启动")
                 
                 if self.system_audio_enabled:
+                    self.sys_status.config(text="系统音频转写: 启动中...")
                     self.system_audio_transcription_thread = threading.Thread(target=self.system_audio_transcribe)
                     self.system_audio_transcription_thread.daemon = True
                     self.system_audio_transcription_thread.start()
                     self.log_info(f"系统音频实时转写已启动，使用引擎: {self.engine_type}")
+                else:
+                    self.sys_status.config(text="系统音频转写: 未启动")
                 
                 # 保持原有的转写线程作为兼容
                 self.transcription_thread = threading.Thread(target=self.real_time_transcribe)
                 self.transcription_thread.daemon = True
                 self.transcription_thread.start()
             else:
-                self.realtime_status.config(text="实时转写: 未启动")
+                self.mic_status.config(text="麦克风转写: 未启动")
+                self.sys_status.config(text="系统音频转写: 未启动")
             
             # 开始录音线程
             self.record_thread = threading.Thread(target=self.record_audio)
@@ -1292,10 +1322,31 @@ class AudioTranscriber:
             time.sleep(1)
             
     def stop_recording(self):
+        """异步停止录音"""
         self.log_info("停止录音...")
         self.recording = False
         self.real_time_transcription = False
         
+        # 显示进度条并禁用录音按钮
+        self.progress.start()
+        self.record_button.config(state="disabled")
+        self.status_label.config(text="正在停止录音...")
+        self.status_bar.config(text="正在停止录音，请稍候...")
+        
+        # 在后台线程中执行停止操作
+        def stop_recording_thread():
+            try:
+                saved_files = self._stop_recording_internal()
+                # 停止完成后更新UI
+                self.root.after(0, lambda: self._on_recording_stopped(saved_files))
+            except Exception as e:
+                # 停止失败后更新UI
+                self.root.after(0, lambda: self._on_recording_stop_error(str(e)))
+        
+        threading.Thread(target=stop_recording_thread, daemon=True).start()
+    
+    def _stop_recording_internal(self):
+        """内部停止录音逻辑（在后台线程中执行）"""
         # 等待转写线程结束
         threads_to_wait = []
         
@@ -1406,11 +1457,6 @@ class AudioTranscriber:
             self.log_info(f"音频流已关闭: {', '.join(streams_closed)}")
         else:
             self.log_info("没有活跃的音频流需要关闭")
-            
-        self.record_button.config(text="开始录音")
-        self.status_label.config(text="录音完成")
-        self.status_bar.config(text="保存录音文件...")
-        self.realtime_status.config(text="实时转写: 已停止")
         
         # 保存录音文件
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1482,8 +1528,6 @@ class AudioTranscriber:
             
             self.log_info(f"音频帧数据已清空，内存使用: {memory_mb:.1f}MB")
             
-            self.transcribe_button.config(state="normal")
-            
             # 记录保存的文件信息
             if saved_files:
                 duration = time.time() - self.start_time if self.start_time else 0
@@ -1494,10 +1538,11 @@ class AudioTranscriber:
                         file_size = os.path.getsize(file_path) / 1024  # KB
                         self.log_info(f"{file_type}文件已保存: {file_name}, 大小: {file_size:.1f}KB")
                 
-                self.status_bar.config(text=f"录音已保存: {len(saved_files)} 个文件")
+                # 返回保存的文件信息供UI更新使用
+                return saved_files
             else:
-                self.status_bar.config(text="录音完成，但没有音频数据")
                 self.log_warning("录音完成，但没有检测到音频数据")
+                return []
             
         except Exception as e:
             self.log_error(f"保存录音文件失败: {str(e)}")
@@ -1510,6 +1555,32 @@ class AudioTranscriber:
             if hasattr(self, 'system_audio_frames'):
                 self.system_audio_frames.clear()
             self.log_info("清空音频帧数据以释放内存")
+            return []  # 返回空列表表示没有保存文件
+    
+    def _on_recording_stopped(self, saved_files):
+        """录音停止完成后的UI更新"""
+        self.progress.stop()
+        self.record_button.config(text="开始录音", state="normal")
+        self.status_label.config(text="录音已停止")
+        self.mic_status.config(text="麦克风转写: 已停止")
+        self.sys_status.config(text="系统音频转写: 已停止")
+        self.transcribe_button.config(state="normal")
+        
+        if saved_files:
+            self.status_bar.config(text=f"录音已保存: {len(saved_files)} 个文件")
+        else:
+            self.status_bar.config(text="录音完成，但没有音频数据")
+        
+        self.log_info("录音停止操作完成")
+    
+    def _on_recording_stop_error(self, error_msg):
+        """录音停止失败后的UI更新"""
+        self.progress.stop()
+        self.record_button.config(text="开始录音", state="normal")
+        self.status_label.config(text="停止录音时出错")
+        self.status_bar.config(text="停止录音时出错")
+        self.log_error(f"停止录音时出错: {error_msg}")
+        messagebox.showerror("错误", f"停止录音时出错: {error_msg}")
             
     def merge_audio_files(self, mic_file, sys_file, output_file, timestamp):
         """合并麦克风和系统音频文件"""
@@ -1750,7 +1821,7 @@ class AudioTranscriber:
         
     def real_time_transcribe(self):
         """实时转写线程函数"""
-        self.root.after(0, lambda: self.realtime_status.config(text="实时转写: 运行中"))
+        # 兼容性保留，实际状态由各自线程更新
         self.log_info(f"实时转写线程启动，使用引擎: {self.engine_type}")
         
         transcription_count = 0
@@ -1834,11 +1905,12 @@ class AudioTranscriber:
                 self.log_error(f"实时转写线程异常: {str(e)}")
                 continue
                 
-        self.root.after(0, lambda: self.realtime_status.config(text="实时转写: 已停止"))
+        self.root.after(0, lambda: self.mic_status.config(text="麦克风转写: 已停止"))
         self.log_info(f"实时转写线程结束，共处理 {transcription_count} 个音频片段")
         
     def microphone_transcribe(self):
-        """麦克风音频实时转写线程函数"""
+        """麦克风实时转写线程函数"""
+        self.root.after(0, lambda: self.mic_status.config(text="麦克风转写: 运行中"))
         self.log_info(f"麦克风转写线程启动，使用引擎: {self.engine_type}")
         
         transcription_count = 0
@@ -1916,10 +1988,12 @@ class AudioTranscriber:
                 self.log_error(f"麦克风转写线程异常: {str(e)}")
                 continue
                 
+        self.root.after(0, lambda: self.mic_status.config(text="麦克风转写: 已停止"))
         self.log_info(f"麦克风转写线程结束，共处理 {transcription_count} 个音频片段")
     
     def system_audio_transcribe(self):
         """系统音频实时转写线程函数"""
+        self.root.after(0, lambda: self.sys_status.config(text="系统音频转写: 运行中"))
         self.log_info(f"系统音频转写线程启动，使用引擎: {self.engine_type}")
         
         transcription_count = 0
@@ -1997,23 +2071,86 @@ class AudioTranscriber:
                 self.log_error(f"系统音频转写线程异常: {str(e)}")
                 continue
                 
+        self.root.after(0, lambda: self.sys_status.config(text="系统音频转写: 已停止"))
         self.log_info(f"系统音频转写线程结束，共处理 {transcription_count} 个音频片段")
         
     def append_realtime_text(self, text):
-        """向文本区域追加实时转写结果"""
+        """向文本区域追加实时转写结果（兼容性函数）"""
         # 过滤异常文本
         filtered_text = self.filter_unwanted_text(text)
         if filtered_text.strip():  # 只有过滤后还有内容才添加
-            self.text_area.insert(tk.END, filtered_text)
-            self.text_area.see(tk.END)  # 自动滚动到底部
+            # 根据文本内容判断来源并分别显示
+            if "[麦克风]" in filtered_text:
+                self.append_mic_text(filtered_text)
+            elif "[系统音频]" in filtered_text:
+                self.append_sys_text(filtered_text)
+            else:
+                # 默认显示在麦克风区域
+                self.append_mic_text(filtered_text)
             self.save_button.config(state="normal")
+    
+    def append_mic_text(self, text):
+        """向麦克风文本区域追加转写结果"""
+        filtered_text = self.filter_unwanted_text(text)
+        if filtered_text.strip():
+            self.mic_text_area.insert(tk.END, filtered_text)
+            self.mic_text_area.see(tk.END)  # 自动滚动到底部
+    
+    def append_sys_text(self, text):
+        """向系统音频文本区域追加转写结果"""
+        filtered_text = self.filter_unwanted_text(text)
+        if filtered_text.strip():
+            self.sys_text_area.insert(tk.END, filtered_text)
+            self.sys_text_area.see(tk.END)  # 自动滚动到底部
     
     def on_engine_change(self, event=None):
         """引擎切换事件处理"""
         self.engine_type = self.engine_var.get()
         if self.engine_type == "whisper":
-            self.load_whisper_model()
+            self.load_whisper_model_async()
+        else:
+            self.status_label.config(text=f"已切换到{self.engine_type}引擎")
+    
+    def load_whisper_model_async(self):
+        """异步加载Whisper模型"""
+        # 显示进度条并禁用相关控件
+        self.progress.start()
+        self.engine_combo.config(state="disabled")
+        self.record_button.config(state="disabled")
+        self.transcribe_button.config(state="disabled")
+        self.status_label.config(text="正在加载Whisper模型...")
+        self.status_bar.config(text="正在加载模型，请稍候...")
+        
+        # 在后台线程中加载模型
+        def load_model_thread():
+            try:
+                self.load_whisper_model()
+                # 加载完成后更新UI
+                self.root.after(0, self._on_model_loaded_success)
+            except Exception as e:
+                # 加载失败后更新UI
+                self.root.after(0, lambda: self._on_model_loaded_error(str(e)))
+        
+        threading.Thread(target=load_model_thread, daemon=True).start()
+    
+    def _on_model_loaded_success(self):
+        """模型加载成功的UI更新"""
+        self.progress.stop()
+        self.engine_combo.config(state="readonly")
+        self.record_button.config(state="normal")
+        self.transcribe_button.config(state="normal" if hasattr(self, 'audio_file_path') and self.audio_file_path else "disabled")
         self.status_label.config(text=f"已切换到{self.engine_type}引擎")
+        self.status_bar.config(text="Whisper模型加载完成")
+    
+    def _on_model_loaded_error(self, error_msg):
+        """模型加载失败的UI更新"""
+        self.progress.stop()
+        self.engine_combo.config(state="readonly")
+        self.record_button.config(state="normal")
+        self.transcribe_button.config(state="normal" if hasattr(self, 'audio_file_path') and self.audio_file_path else "disabled")
+        self.status_label.config(text="模型加载失败，已回退到Google引擎")
+        self.status_bar.config(text="模型加载失败")
+        messagebox.showerror("错误", f"加载Whisper模型失败: {error_msg}\n\n建议：\n1. 检查网络连接\n2. 确保有足够的磁盘空间\n3. 安装transformers库: pip install transformers\n4. 尝试重新启动程序")
     
     def load_whisper_model(self):
         """加载Whisper模型"""
@@ -2034,8 +2171,6 @@ class AudioTranscriber:
                 if TRANSFORMERS_AVAILABLE and self.model_type == "belle":
                     try:
                         self.log_info(f"开始加载BELLE-2/Belle-whisper-large-v3-turbo-zh模型，设备: {device} {gpu_info}")
-                        self.status_label.config(text=f"正在下载并加载BELLE模型（首次使用需要下载）- {device.upper()}模式...")
-                        self.root.update()
                         
                         start_time = time.time()
                         
@@ -2072,7 +2207,6 @@ class AudioTranscriber:
                         )
                         
                         load_time = time.time() - start_time
-                        self.status_label.config(text=f"BELLE模型加载完成 - {device.upper()}")
                         self.log_info(f"BELLE-2/Belle-whisper-large-v3-turbo-zh模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
                         return
                         
@@ -2083,8 +2217,6 @@ class AudioTranscriber:
                 
                 # 如果BELLE模型加载失败或不可用，使用原生Whisper模型
                 self.log_info(f"开始加载原生Whisper模型，设备: {device} {gpu_info}")
-                self.status_label.config(text=f"正在下载并加载Whisper模型（首次使用需要下载）- {device.upper()}模式...")
-                self.root.update()
                 
                 # 优先使用turbo模型（最新最快模型）
                 try:
@@ -2092,7 +2224,6 @@ class AudioTranscriber:
                     start_time = time.time()
                     self.whisper_model = whisper.load_model("turbo", device=device)
                     load_time = time.time() - start_time
-                    self.status_label.config(text=f"Whisper模型加载完成（turbo模型 - {device.upper()}）")
                     self.log_info(f"turbo模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
                 except Exception as e1:
                     self.log_warning(f"turbo模型加载失败: {str(e1)}")
@@ -2102,7 +2233,6 @@ class AudioTranscriber:
                         start_time = time.time()
                         self.whisper_model = whisper.load_model("small", device=device)
                         load_time = time.time() - start_time
-                        self.status_label.config(text=f"Whisper模型加载完成（small模型 - {device.upper()}）")
                         self.log_info(f"small模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
                     except Exception as e2:
                         self.log_warning(f"small模型加载失败: {str(e2)}")
@@ -2112,7 +2242,6 @@ class AudioTranscriber:
                             start_time = time.time()
                             self.whisper_model = whisper.load_model("base", device=device)
                             load_time = time.time() - start_time
-                            self.status_label.config(text=f"Whisper模型加载完成（base模型 - {device.upper()}）")
                             self.log_info(f"base模型加载成功，耗时: {load_time:.1f}秒，设备: {device}")
                         except Exception as e3:
                             self.log_warning(f"base模型加载失败: {str(e3)}")
@@ -2122,7 +2251,6 @@ class AudioTranscriber:
                                 start_time = time.time()
                                 self.whisper_model = whisper.load_model("tiny", device=device)
                                 load_time = time.time() - start_time
-                                self.status_label.config(text=f"Whisper模型加载完成（tiny模型 - {device.upper()} - 准确率较低）")
                                 self.log_warning(f"tiny模型加载成功，耗时: {load_time:.1f}秒，设备: {device}（注意：准确率较低）")
                             except Exception as e4:
                                 error_msg = f"所有模型下载失败。Turbo: {str(e1)}, Small: {str(e2)}, Base: {str(e3)}, Tiny: {str(e4)}"
@@ -2131,11 +2259,10 @@ class AudioTranscriber:
                         
             except Exception as e:
                 self.log_error(f"Whisper模型加载失败: {str(e)}")
-                messagebox.showerror("错误", f"加载Whisper模型失败: {str(e)}\n\n建议：\n1. 检查网络连接\n2. 确保有足够的磁盘空间\n3. 安装transformers库: pip install transformers\n4. 尝试重新启动程序")
                 self.engine_var.set("google")
                 self.engine_type = "google"
-                self.status_label.config(text="已回退到Google引擎")
                 self.log_info("已回退到Google引擎")
+                raise e  # 重新抛出异常，让异步函数处理
     
     def transcribe_with_whisper(self, audio_file_path):
         """使用Whisper进行转写"""
