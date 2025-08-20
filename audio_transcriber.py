@@ -140,18 +140,14 @@ class AudioTranscriber:
         # 配置网格权重
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=2)  # 转写结果列
-        main_frame.columnconfigure(1, weight=1)  # 日志列
-        main_frame.columnconfigure(2, weight=1)  # 音频源列
-        main_frame.rowconfigure(3, weight=1)
-        
-        # 标题
-        title_label = ttk.Label(main_frame, text="录音转写工具", font=("Arial", 16, "bold"))
-        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        main_frame.columnconfigure(0, weight=1)  # 音频文件列
+        main_frame.columnconfigure(1, weight=1)  # 转写结果列
+        main_frame.columnconfigure(2, weight=1)  # 日志列
+        main_frame.rowconfigure(2, weight=1)
         
         # 录音控制区域
         control_frame = ttk.LabelFrame(main_frame, text="录音控制", padding="8")
-        control_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
+        control_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
         control_frame.columnconfigure(8, weight=1)
         
         # 第一行控件
@@ -206,7 +202,7 @@ class AudioTranscriber:
         
         # 文件操作区域
         file_frame = ttk.LabelFrame(main_frame, text="文件操作", padding="8")
-        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
+        file_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 8))
         
         # 打开音频文件按钮
         ttk.Button(file_frame, text="打开音频文件", command=self.open_audio_file).grid(row=0, column=0, padx=(0, 8))
@@ -223,9 +219,16 @@ class AudioTranscriber:
         ttk.Button(file_frame, text="清空文本", command=self.clear_text).grid(row=0, column=3)
         
         # 三列主内容区域
-        # 转写结果区域（左列）- 拆分为两个子区域
+        # 音频文件管理区域（左列）
+        audio_files_frame = ttk.LabelFrame(main_frame, text="音频文件管理", padding="6")
+        audio_files_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 3))
+        audio_files_frame.columnconfigure(0, weight=1)
+        audio_files_frame.rowconfigure(1, weight=1)
+        audio_files_frame.rowconfigure(3, weight=1)
+        
+        # 转写结果区域（中列）- 拆分为两个子区域
         result_frame = ttk.Frame(main_frame)
-        result_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 3))
+        result_frame.grid(row=2, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 3))
         result_frame.columnconfigure(0, weight=1)
         result_frame.rowconfigure(0, weight=1)
         result_frame.rowconfigure(1, weight=1)
@@ -261,9 +264,9 @@ class AudioTranscriber:
         # 保持原有的text_area用于兼容性（合并显示）
         self.text_area = self.mic_text_area  # 默认指向麦克风区域
         
-        # 日志区域（中列）
+        # 日志区域（右列）
         log_frame = ttk.LabelFrame(main_frame, text="执行日志", padding="6")
-        log_frame.grid(row=3, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 3))
+        log_frame.grid(row=2, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 0))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
         
@@ -280,13 +283,6 @@ class AudioTranscriber:
         self.log_area = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=18, font=("Consolas", 8))
         self.log_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_area.config(state=tk.DISABLED)  # 设置为只读
-        
-        # 音频文件管理区域（右列）
-        audio_files_frame = ttk.LabelFrame(main_frame, text="音频文件管理", padding="6")
-        audio_files_frame.grid(row=3, column=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 0))
-        audio_files_frame.columnconfigure(0, weight=1)
-        audio_files_frame.rowconfigure(1, weight=1)
-        audio_files_frame.rowconfigure(3, weight=1)
         
         # 本次录音文件区域
         current_files_frame = ttk.LabelFrame(audio_files_frame, text="本次录音文件", padding="3")
@@ -343,11 +339,11 @@ class AudioTranscriber:
         
         # 进度条
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
-        self.progress.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10))
+        self.progress.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10))
         
         # 状态栏
         self.status_bar = ttk.Label(main_frame, text="就绪", relief=tk.SUNKEN)
-        self.status_bar.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E))
+        self.status_bar.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E))
     
     def setup_logging(self):
         """设置日志系统"""
