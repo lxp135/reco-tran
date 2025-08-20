@@ -284,32 +284,9 @@ class AudioTranscriber:
         self.log_area.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_area.config(state=tk.DISABLED)  # 设置为只读
         
-        # 本次录音文件区域
-        current_files_frame = ttk.LabelFrame(audio_files_frame, text="本次录音文件", padding="3")
-        current_files_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3))
-        current_files_frame.columnconfigure(0, weight=1)
-        current_files_frame.rowconfigure(0, weight=1)
-        
-        # 本次录音文件列表
-        self.current_files_listbox = tk.Listbox(current_files_frame, height=4, font=("Arial", 8), width=30)
-        current_files_scrollbar = ttk.Scrollbar(current_files_frame, orient="vertical", command=self.current_files_listbox.yview)
-        self.current_files_listbox.configure(yscrollcommand=current_files_scrollbar.set)
-        self.current_files_listbox.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        current_files_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        
-        # 本次录音文件操作按钮
-        current_files_buttons = ttk.Frame(current_files_frame)
-        current_files_buttons.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(3, 0))
-        ttk.Button(current_files_buttons, text="播放", command=self.play_current_file, width=6).grid(row=0, column=0, padx=(0, 3))
-        ttk.Button(current_files_buttons, text="文件夹", command=self.open_current_folder, width=6).grid(row=0, column=1, padx=(0, 3))
-        ttk.Button(current_files_buttons, text="清空", command=self.clear_current_files, width=6).grid(row=0, column=2)
-        
-        # 分隔线
-        ttk.Separator(audio_files_frame, orient='horizontal').grid(row=2, column=0, sticky=(tk.W, tk.E), pady=3)
-        
         # 历史文件区域
         history_files_frame = ttk.LabelFrame(audio_files_frame, text="历史文件", padding="3")
-        history_files_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        history_files_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         history_files_frame.columnconfigure(0, weight=1)
         history_files_frame.rowconfigure(1, weight=1)
         
@@ -334,7 +311,6 @@ class AudioTranscriber:
         ttk.Button(history_files_buttons, text="文件夹", command=self.open_history_folder, width=6).grid(row=0, column=2)
         
         # 初始化音频文件列表
-        self.current_audio_files = []  # 存储本次录音的文件路径
         self.refresh_history_files()  # 加载历史文件
         
         # 进度条
@@ -1631,8 +1607,8 @@ class AudioTranscriber:
         
         if saved_files:
             self.status_bar.config(text=f"录音已保存: {len(saved_files)} 个文件")
-            # 更新本次录音文件显示
-            self.update_current_files_display(saved_files)
+            # 刷新历史文件列表
+            self.refresh_history_files()
         else:
             self.status_bar.config(text="录音完成，但没有音频数据")
         
@@ -2381,74 +2357,7 @@ class AudioTranscriber:
             self.log_error(f"Whisper转写失败: {str(e)}")
             raise Exception(f"Whisper转写失败: {str(e)}")
     
-    def update_current_files_display(self, saved_files):
-        """更新本次录音文件显示"""
-        try:
-            # 清空当前列表
-            self.current_files_listbox.delete(0, tk.END)
-            self.current_audio_files.clear()
-            
-            # 添加新文件
-            for file_path in saved_files:
-                if os.path.exists(file_path):
-                    filename = os.path.basename(file_path)
-                    file_size = os.path.getsize(file_path)
-                    size_mb = file_size / (1024 * 1024)
-                    display_text = f"{filename} ({size_mb:.1f}MB)"
-                    
-                    self.current_files_listbox.insert(tk.END, display_text)
-                    self.current_audio_files.append(file_path)
-                    
-            self.log_info(f"📁 本次录音生成 {len(saved_files)} 个文件")
-            
-        except Exception as e:
-            self.log_error(f"更新本次录音文件显示失败: {e}")
-    
-    def play_current_file(self):
-        """播放选中的本次录音文件"""
-        try:
-            selection = self.current_files_listbox.curselection()
-            if not selection:
-                messagebox.showwarning("提示", "请先选择要播放的文件")
-                return
-            
-            file_index = selection[0]
-            if file_index < len(self.current_audio_files):
-                file_path = self.current_audio_files[file_index]
-                self.play_audio_file(file_path)
-            
-        except Exception as e:
-            self.log_error(f"播放文件失败: {e}")
-            messagebox.showerror("错误", f"播放文件失败: {e}")
-    
-    def open_current_folder(self):
-        """打开本次录音文件所在文件夹"""
-        try:
-            if self.current_audio_files:
-                folder_path = os.path.dirname(self.current_audio_files[0])
-                self.open_folder(folder_path)
-            else:
-                # 打开默认音频文件夹
-                audio_dir = os.path.join(os.getcwd(), "audio")
-                if os.path.exists(audio_dir):
-                    self.open_folder(audio_dir)
-                else:
-                    messagebox.showinfo("提示", "暂无录音文件")
-                    
-        except Exception as e:
-            self.log_error(f"打开文件夹失败: {e}")
-            messagebox.showerror("错误", f"打开文件夹失败: {e}")
-    
-    def clear_current_files(self):
-        """清空本次录音文件列表"""
-        try:
-            if messagebox.askyesno("确认", "确定要清空本次录音文件列表吗？\n（不会删除实际文件）"):
-                self.current_files_listbox.delete(0, tk.END)
-                self.current_audio_files.clear()
-                self.log_info("📁 已清空本次录音文件列表")
-                
-        except Exception as e:
-            self.log_error(f"清空文件列表失败: {e}")
+
     
     def refresh_history_files(self):
         """刷新历史文件列表"""
